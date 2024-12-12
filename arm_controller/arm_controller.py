@@ -1,24 +1,33 @@
 import rclpy
+#import rospy
 
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.time import Duration
 import rclpy.time
 import time
-import os 
+import os
+import lh_interfaces
+import tf2_ros
 
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
-#from lh_interfaces import ObjectPresence
+from lh_interfaces.msg import ObjectPresence
+from geometry_msgs.msg import Transform
+#from geometry_msgs.msg import TransformStamped
+from tf2_msgs.msg import TFMessage
+
 import sys
 from importlib import import_module
 from opcua import Client, ua
 from lh_interfaces.msg import Statekey
 
-#from tf2_ros import TransformListener
+from tf2_ros import TransformListener
+from arm_planner import ur5_transforms
+#from ur5_transforms import forward_kinematics
 
 ############################
 
@@ -42,8 +51,8 @@ from lh_interfaces.msg import Statekey
 #to do, change to use cfg class
 def distance_between_cfgs(cfg1, cfg2):
     d=0
-    if(cfg1==None or cfg2==None):
-        return 0
+    #if(cfg1==None or cfg2==None):
+    #    return 0
     if(len(cfg1)!=len(cfg2)):
         print("error: computing distances of cfgs with different lengths")
         return 0
@@ -63,10 +72,7 @@ def getSetGripperMessage(active):
         
 def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
     #speed_multiplier=.25
-    goal_message = FollowJointTrajectory.Goal()
-    message_list=[]
-    for joint_name in joint_names:
-        goal_message.trajectory.joint_names.append(joint_name)        
+    message_list=[]            
     #if self.latest_joint_states_message is not None:
     #    from_point = JointTrajectoryPoint()
     #    from_point.positions = self.latest_joint_states_message.position
@@ -104,6 +110,10 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                 print(to_point.positions)
                 to_point.velocities = vel                    
                 to_point.time_from_start = Duration(seconds=duration_step).to_msg()
+                goal_message = FollowJointTrajectory.Goal()
+                
+                for joint_name in joint_names:
+                    goal_message.trajectory.joint_names.append(joint_name)
                 goal_message.trajectory.points.append(to_point)
                 if not batch_send:
                     print('message =')
@@ -126,6 +136,11 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
             print(to_point.positions)
             to_point.velocities = vel
             to_point.time_from_start = Duration(seconds=duration).to_msg()
+
+            goal_message = FollowJointTrajectory.Goal()
+            for joint_name in joint_names:
+                goal_message.trajectory.joint_names.append(joint_name)
+            
             goal_message.trajectory.points.append(to_point)
             if not batch_send:
                 print('message =')
@@ -183,19 +198,30 @@ class messageList:
     def loadFromMessage(self,node):
        print("code goes here")
         
-
+#not, this functions expects positional component of cfg
 def interpolate(cfg1,cfg2, stepsize):
     n_steps=int(distance_between_cfgs(cfg1, cfg2)/stepsize)
     print(n_steps)
     steps=[cfg1]
-    for i in range(1,n_steps):
+    v=[]
+    for i in range(0,len(cfg1)):
+      v.append((cfg1[i]-cfg2[i])/n_steps)
+    cfg_list=[]
+    for i in range(0,n_steps):
         cfg_step=[]
+        #cfg_list=cfg_list+[0,0,0,0,0,0,0,0,0,0,0,0]
         for j in range(0,len(cfg1)):
             x=(cfg2[j]*i+cfg1[j]*(n_steps-i))/n_steps
-            cfg_step.append(x)        
-        steps.append(cfg2)
+            cfg_step.append(x)
+            cfg_list.append(x)
+            #cfg_list.append(v[j])
+        steps.append(cfg_step)
+        cfg_list=cfg_list+v
+        cfg_list.append(1)
     print(steps)
-    return steps
+    print("cfg list")
+    print(cfg_list)
+    return cfg_list
 
                           
 def replan(node,joint_names,argv):
@@ -219,9 +245,9 @@ class SendTraj(Node):
     latest_joint_states_message: JointState = None
     upcoming_keypoints=[]
     time_to_keypoints=[]
-    object_position=[]
     object_presence=False
-    latest_obs_camera_potition = None
+    latest_obj_transform: Transform = None
+    
     
     def __init__(self) -> None:
         super().__init__('send_traj')
@@ -229,23 +255,24 @@ class SendTraj(Node):
         self.statekey_subscriber = self.create_subscription(Statekey, '/statekey', self.get_statekey, 10)#take out if causes error
         self.follow_joint_trajectory_action_client = ActionClient(self, FollowJointTrajectory, '/scaled_joint_trajectory_controller/follow_joint_trajectory')
         #add position subsriber
-        #self.objectdetection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 10)#take out if causes error
-        #tfBuffer = tf2_ros.Buffer()
-        #listener = tf2_ros.TransformListener(tfBuffer)
+        self.objectdetection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 10)
+        self.tf_subscriber = self.create_subscription(TFMessage, '/tf', self.get_tf, 10)#take out if causes error
+
+#    def setupTfListener(self):   
         
     def get_joint_states(self, message: JointState):
-        print("got mess")
+        #print("got mess")
         self.latest_joint_states_message = message
-
         
-    #def get_object_presence(self, message: ObjectPresence):
-        #self.object_presence=message.object_present
-        #if(self.object_presence):
-            #trans = tfBuffer.lookup_transform()
-            #object_position = []
-            
-    #def get_object_position(self, message: PositionClient):
-    #    print("write this")
+    def get_object_presence(self, message: ObjectPresence):
+        self.object_presence=message.object_present
+        
+    def get_tf(self, message: TFMessage):
+        print("got tf")
+        print(message.transforms[0].child_frame_id)
+        if message.transforms[0].child_frame_id == "object":
+            self.latest_obj_transform=message.transforms[0].transform
+        print(self.latest_obj_transform)
         
     def get_statekey(self, message: Statekey):
         self.upcoming_keypoints=message.upcoming_keypoints
@@ -253,16 +280,16 @@ class SendTraj(Node):
         print("updating statekey")
 
     #def get_object_presence(self, message: ObjectPresence):
-        #self.object_position=message.upcoming_keypoints
+    #    self.object_position=message.upcoming_keypoints
         
     def goto_feedback_callback(self, feedback_message):
         self.get_logger().info('Feedback: {}'.format(feedback_message))
 
-    def get_latest_joint_statejoint_states(self):
-        if(JointState==None):
+    def get_latest_joint_state(self):
+        if(self.latest_joint_states_message==None):
             print("no joint state recieved")
             return []
-        return self.JointState.position
+        return self.latest_joint_states_message.position
         
     def withinTimeOfKeypoint(self, threshold):
         if len(self.time_to_keypoints) == 0:
@@ -272,6 +299,12 @@ class SendTraj(Node):
         
     def wait_for_time_to_keypoint(self, threshold):
         while not self.withinTimeOfKeypoint(threshold):
+            time.sleep(.01)
+            rclpy.spin_once(self)
+
+
+    def wait_for_object_presence(self):
+        while not self.object_presence:
             time.sleep(.01)
             rclpy.spin_once(self)
 
@@ -334,25 +367,67 @@ class SendTraj(Node):
 
         
         
+def getCfgFromEEPoint(ee_pos):
+    offset_hand=[-.09265,.10915,.0823]  #add claw height to param 3
+    #d_hand=offset_hand[2]
+    z_shoulder=.08916
+    d_la=.425
+    d_ua=.39225
+    c_wrist=ee_pos
+    c_wrist[2]=c_wrist[2]+offset_hand
+    c_shoulder=[0,0,z_shoulder]
+    cfg=[]
+    cfg.append(atan2(ee_pos[0],ee_pos[1]))  #may need to offset this
+    c_shoulder_wrist=math.sqrt(pow(c_wrist[0],2)+pow(c_wrist[1],2)+pow(c_wrist[2]-c_shoulder[2],2))
+    a1=math.acos(pow(d_ua,2)/(2*c_shoulder_wrist,d_la))
+    a2=math.acos(pow(c_shoulder_wrist,2)/(2*d_ua,d_la))
+    a3=math.acos(pow(d_la,2)/(2*c_shoulder_wrist,d_ua))
+    cfg.append(-a1-math.asin((c_wrist[2]-c_shoulder[2])/c_shoulder_wrist))
+    cfg.append(a2)
+    cfg.append(-3.141596+cfg[1]-cfg[2])
+    cfg.append(math.asin((c_wrist[2]-c_shoulder[2])/c_shoulder_wrist))
+    cfg.append(3.141596/2)
+    return cfg
+               
+def graspObj(send_traj,joint_names):
+    #start=[-1.553973,-0.894160,1.232620,-1.485636,-0.671691,-0.146161,-0.718528, 0.277630,-0.590998,0.308936,0.312119,-0.313029,.05]
+    #goal=[-1.420226,-0.561880,0.837741,-1.528992,-0.919493,-0.068503,0.489961,0.286832,-0.508009,-0.303644,-0.225533,0.047273,.05]
+    time.sleep(1)
+    print("before op")
+    send_traj.wait_for_object_presence()
+    print("got object presence")
+    start_borked=send_traj.get_latest_joint_state()
+    start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
+    print((180/3.141596)*start[0])
+    while send_traj.latest_obj_transform == None:
+        time.sleep(.01)
+        rclpy.spin_once(send_traj)
 
-
-def interpolateTest(send_traj,joint_names):
-    start=[-1.553973,-0.894160,1.232620,-1.485636,-0.671691,-0.146161,-0.718528, 0.277630,-0.590998,0.308936,0.312119,-0.313029,.05]
-    goal=[-1.420226,-0.561880,0.837741,-1.528992,-0.919493,-0.068503,0.489961,0.286832,-0.508009,-0.303644,-0.225533,0.047273,.05]
-    traj_2=interpolate(start,goal, .1)
-    traj=[]
-    for t in traj_2:
-        traj=traj+t
+    trans = send_traj.latest_obj_transform
+    print(trans)
+    object_pos=[trans.translation.x,trans.translation.y,trans.translation.z-.185]
+    print(object_pos)
+    eePos=ur5_transforms.forward_kinematics(start,[0,0])  #make first param height of gripper    
+    print(eePos+object_pos)
+    goal=ur5_transforms.inverse_kinematics(eePos+object_pos,start)
+    goal_borked=[goal[1],goal[2],goal[3],goal[4],goal[5],goal[0]]
+    print(goal)    
+    eePosGoal=ur5_transforms.forward_kinematics(goal,[0,0])  #make second parameter camera offset
+    print(eePosGoal)
+    traj=interpolate(start,goal, .1)
     n_points=len(traj)//(2*len(joint_names)+1)
     batch_send=False
     speed_multiplier=.1
     messages =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
     ml=messageList()
     ml.messages=[messages]
+    print()
+    print("messages")
     print(messages)
+    print()
+    print()
     send_traj.sendMessageList(ml)
 
-                    
     
 def main(args=None):
     print("here")
@@ -363,7 +438,9 @@ def main(args=None):
     #joint_names=['shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint', 'shoulder_pan_joint']
     joint_names=[ 'shoulder_pan_joint','shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
     send_traj = SendTraj()
-    interpolateTest(send_traj,joint_names)
+    #send_traj.setupTfListener()
+    ur5_transforms.testEEPosTransform()
+    graspObj(send_traj,joint_names)
     return
     print("send traj")
     if(str(sys.argv[1])=="-f"):

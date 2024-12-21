@@ -9,6 +9,9 @@ import time
 import os
 import lh_interfaces
 import tf2_ros
+import geometry_msgs.msg
+from tf2_ros import TransformException
+
 
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import JointState
@@ -27,7 +30,7 @@ from lh_interfaces.msg import Statekey
 
 from tf2_ros import TransformListener
 from arm_planner import ur5_transforms
-#from ur5_transforms import forward_kinematics
+import numpy as np
 
 ############################
 
@@ -81,8 +84,8 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
     cfg_last=None
     duration_last=0
     for i in range(0,n_points):
-        print("top of loop")
-        print(cfg_list)
+        #print("top of loop")
+        #print(cfg_list)
         start = i*13
         end = start + 12
         cfg = [float(cfg_list[j]) for j in range(start,start+6)]
@@ -106,8 +109,8 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                 duration_step=duration_step+(duration-duration_last)/n_steps
                 to_point = JointTrajectoryPoint()
                 to_point.positions=cfg_step
-                print("position in stepping")
-                print(to_point.positions)
+                #print("position in stepping")
+                #print(to_point.positions)
                 to_point.velocities = vel                    
                 to_point.time_from_start = Duration(seconds=duration_step).to_msg()
                 goal_message = FollowJointTrajectory.Goal()
@@ -116,24 +119,24 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                     goal_message.trajectory.joint_names.append(joint_name)
                 goal_message.trajectory.points.append(to_point)
                 if not batch_send:
-                    print('message =')
-                    print(format(goal_message))
+                    #print('message =')
+                    #print(format(goal_message))
                     message_list.append(goal_message)
                     goal_message.trajectory.points.clear()
                     goal_message.trajectory.points.append(to_point)
                 cfg_last=cfg
                 duration_last=duration        
         else:
-            print("cfg=")
-            print(cfg)
-            print("vel=")
-            print(vel)
-            print("duration=")
-            print(duration)            
+            #print("cfg=")
+            #print(cfg)
+            #print("vel=")
+            #print(vel)
+            #print("duration=")
+            #print(duration)            
             to_point = JointTrajectoryPoint()
             to_point.positions=cfg
-            print("pos")
-            print(to_point.positions)
+            #print("pos")
+            #print(to_point.positions)
             to_point.velocities = vel
             to_point.time_from_start = Duration(seconds=duration).to_msg()
 
@@ -143,14 +146,14 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
             
             goal_message.trajectory.points.append(to_point)
             if not batch_send:
-                print('message =')
-                print(format(goal_message))
+                #print('message =')
+                #print(format(goal_message))
                 message_list.append(goal_message)
                 goal_message.trajectory.points.clear()
                 goal_message.trajectory.points.append(to_point)
         cfg_last=cfg
         duration_last=duration
-    print("out of the loop")
+    #print("out of the loop")
     if batch_send:
         message_list.append(goal_message)
     return message_list
@@ -202,7 +205,7 @@ class messageList:
 def interpolate(cfg1,cfg2, stepsize):
     n_steps=int(distance_between_cfgs(cfg1, cfg2)/stepsize)
     print(n_steps)
-    steps=[cfg1]
+    steps=[cfg2]
     v=[]
     for i in range(0,len(cfg1)):
       v.append((cfg1[i]-cfg2[i])/n_steps)
@@ -211,13 +214,13 @@ def interpolate(cfg1,cfg2, stepsize):
         cfg_step=[]
         #cfg_list=cfg_list+[0,0,0,0,0,0,0,0,0,0,0,0]
         for j in range(0,len(cfg1)):
-            x=(cfg2[j]*i+cfg1[j]*(n_steps-i))/n_steps
+            x=(cfg2[j]*i+cfg2[j]*(n_steps-i))/n_steps
             cfg_step.append(x)
             cfg_list.append(x)
             #cfg_list.append(v[j])
         steps.append(cfg_step)
         cfg_list=cfg_list+v
-        cfg_list.append(1)
+        cfg_list.append(i*.25)
     print(steps)
     print("cfg list")
     print(cfg_list)
@@ -247,7 +250,7 @@ class SendTraj(Node):
     time_to_keypoints=[]
     object_presence=False
     latest_obj_transform: Transform = None
-    
+    #latest_obj_rotation: Rotation = None
     
     def __init__(self) -> None:
         super().__init__('send_traj')
@@ -257,22 +260,23 @@ class SendTraj(Node):
         #add position subsriber
         self.objectdetection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 10)
         self.tf_subscriber = self.create_subscription(TFMessage, '/tf', self.get_tf, 10)#take out if causes error
-
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 #    def setupTfListener(self):   
         
     def get_joint_states(self, message: JointState):
-        #print("got mess")
+        print("got mess",message)
         self.latest_joint_states_message = message
         
     def get_object_presence(self, message: ObjectPresence):
         self.object_presence=message.object_present
         
     def get_tf(self, message: TFMessage):
-        print("got tf")
+        #print("got tf")
         print(message.transforms[0].child_frame_id)
         if message.transforms[0].child_frame_id == "object":
             self.latest_obj_transform=message.transforms[0].transform
-        print(self.latest_obj_transform)
+        #print(self.latest_obj_transform)
         
     def get_statekey(self, message: Statekey):
         self.upcoming_keypoints=message.upcoming_keypoints
@@ -287,7 +291,7 @@ class SendTraj(Node):
 
     def get_latest_joint_state(self):
         if(self.latest_joint_states_message==None):
-            print("no joint state recieved")
+            #print("no joint state recieved")
             return []
         return self.latest_joint_states_message.position
         
@@ -317,6 +321,17 @@ class SendTraj(Node):
             if(self.latest_obs_camera_potition!=None):
                 joint_names=[ 'shoulder_pan_joint','shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']  #this is very very bad.  Need to change to pass this as a paremeter
                 replan(self,joint_names,[])
+
+    def get_transform(self, target_frame: str, source_frame: str):
+        try:
+            # Look up the transform from source_frame to target_frame
+            transform = self.tf_buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
+            self.get_logger().info(f"Transform from {source_frame} to {target_frame}: {transform}")
+            return transform
+        except TransformException as e:
+            self.get_logger().warn(f"Could not get transform: {e}")
+            return None
+
 
         
         
@@ -389,34 +404,170 @@ def getCfgFromEEPoint(ee_pos):
     cfg.append(3.141596/2)
     return cfg
                
-def graspObj(send_traj,joint_names):
-    #start=[-1.553973,-0.894160,1.232620,-1.485636,-0.671691,-0.146161,-0.718528, 0.277630,-0.590998,0.308936,0.312119,-0.313029,.05]
-    #goal=[-1.420226,-0.561880,0.837741,-1.528992,-0.919493,-0.068503,0.489961,0.286832,-0.508009,-0.303644,-0.225533,0.047273,.05]
-    time.sleep(1)
-    print("before op")
+def graspObj_tt(send_traj,joint_names):
+    #wait for object presence
     send_traj.wait_for_object_presence()
-    print("got object presence")
+    print("detected object")
+        
+    #get current cfg
     start_borked=send_traj.get_latest_joint_state()
+    while len(start_borked) == 0:
+        rclpy.spin_once(send_traj)
+        start_borked=send_traj.get_latest_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
-    print((180/3.141596)*start[0])
+    print("start",start,"__",start_borked)
+
+    #get ee pos and rotation from transform tree
+    transform_obj = None
+    #while transform_obj == None:
+    #    transform_obj = send_traj.get_transform('object', 'base_link_inertia')
+    #print("tr obj",transform_obj)
+    transform_ee = None
+    while transform_ee== None:
+        transform_ee=send_traj.get_transform('wrist_3_link', 'base_link_inertia')
+        
+    #get end effector position and rotation
+    eePos,eeRotation=ur5_transforms.forward_kinematics(start,ur5_transforms.dh_params_ur5)  #make first param height of gripper
+    eeRotTranspose = np.transpose(eeRotation)#[[eeRotation[j][i] for j in range(len(eeRotation))] for i in range(len(eeRotation[0]))]
+    print("eePos",eePos,"==",transform_ee.transform.translation)
+    print("eeRotation",eeRotation,"==",transform_ee.transrrom.rotation)
+
+    target = transform_obj.translation
+    tool_height=.0175
+    target[2]=target[2]+tool_height
+    
+    #get goal cfg
+    print("target")
+    print(target)
+    target_rotation=transform_obj.rotation#*send_traj.latest_obj_transform.rotation
+    goal=ur5_transforms.inverse_kinematics(target,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #to do, get right rotation based on object
+    print(goal)    
+    eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #make second parameter camera offset
+    print(eePosGoal)
+
+    #get path from start to goal
+    traj=interpolate(start,goal, .1)
+    #goal.append([0,0,0,0,0,0,1])
+    #traj=goal
+    #return
+    #send path to controller
+    n_points=1#len(traj)//(2*len(joint_names)+1)
+    batch_send=False
+    speed_multiplier=1
+    messages =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
+    ml=messageList()
+    ml.messages=[messages]
+    print()
+    #print("messages")
+    #print(messages)
+    print()
+    print()
+    send_traj.sendMessageList(ml)
+
+    
+    return
+
+
+def graspObj(send_traj,joint_names):
+    #wait for object presence
+    send_traj.wait_for_object_presence()
+    print("detected object")
+        
+    #get current cfg
+    start_borked=send_traj.get_latest_joint_state()
+    while len(start_borked) == 0:
+        rclpy.spin_once(send_traj)
+        start_borked=send_traj.get_latest_joint_state()
+    start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
+    #start=[-1.661064926777975, -1.4241474310504358, -1.754960838948385, -1.5322664419757288, 1.5725599527359009, 3.0504724979400635]
+    print("start",start,"__",start_borked)
+    
+    #get end effector position and rotation
+    eePos,eeRotation=ur5_transforms.forward_kinematics(start,ur5_transforms.dh_params_ur5)  #make first param height of gripper
+    eeRotTranspose = np.transpose(eeRotation)#[[eeRotation[j][i] for j in range(len(eeRotation))] for i in range(len(eeRotation[0]))]
+    print("eePos",eePos)
+    print("eeRotation",eeRotation)
+
+
+    #get object transform from camera
     while send_traj.latest_obj_transform == None:
         time.sleep(.01)
         rclpy.spin_once(send_traj)
 
-    trans = send_traj.latest_obj_transform
-    print(trans)
-    object_pos=[trans.translation.x,trans.translation.y,trans.translation.z-.185]
-    print(object_pos)
-    eePos=ur5_transforms.forward_kinematics(start,[0,0])  #make first param height of gripper    
-    print(eePos+object_pos)
-    goal=ur5_transforms.inverse_kinematics(eePos+object_pos,start)
-    goal_borked=[goal[1],goal[2],goal[3],goal[4],goal[5],goal[0]]
-    print(goal)    
-    eePosGoal=ur5_transforms.forward_kinematics(goal,[0,0])  #make second parameter camera offset
+    #set offsets
+    camera_offset_real=np.array([0.062,-.008,.044])
+    camera_offset=np.array([0.008,-.062,.044])
+    q=send_traj.latest_obj_transform.rotation
+
+    object_rotation = ur5_transforms.rot_m_from_qu(q)
+
+    camera_q=np.array([[0, -1, 0, 0.062],
+                       [1, 0, 0, -0.008],
+                       [0, 0, 1, 0.044],
+                       [0, 0, 0, 1]])
+    camera_rotation = ur5_transforms.rot_m_from_qu(camera_q)
+    
+    obj_camera_translation_v = send_traj.latest_obj_transform.translation
+    obj_camera_translation=np.array([obj_camera_translation_v.x,obj_camera_translation_v.y,obj_camera_translation_v.z])
+    #obj_camera_translation=[0.03405322, 0.06416492, 0.31300002]
+    offset_tool=[0,0,.175]
+
+    t1=camera_offset+obj_camera_translation
+    t1a=camera_offset_real+obj_camera_translation
+    t15a=np.dot(np.transpose(camera_rotation),np.transpose(t1a))
+    
+    t2=np.dot(np.transpose(eeRotation),np.transpose(t1))
+    t2a=np.dot(np.transpose(eeRotation),np.transpose(t15a))
+    
+    print("t2",t2,"="t2a)
+    t3=eePos+t2
+    target=t3#+offset_tool
+
+    #this block is defunct and can be deleted
+    #transform camera position to frame of base    
+    print("obj_camera_translation",obj_camera_translation)
+    obj_ee_transform=obj_camera_translation+camera_offset
+    print("object,camera",obj_camera_translation)
+    obj_ee_transform=obj_ee_transform[0:3]
+    print("object,ee",obj_ee_transform)
+    arr=np.array([obj_ee_transform])
+    obj_ee_trans_rotated=np.dot(eeRotTranspose,obj_ee_transform)
+    print("obj_ee_trans_rotated",obj_ee_trans_rotated)
+    object_pos_base=obj_ee_trans_rotated+eePos
+    #get target position
+    offset_tool=[0,0,.175+.02]
+    target_2 = object_pos_base+offset_tool
+
+    #get goal cfg
+    print("target")
+    print(target,"=",target_2)
+    print("ee pos",eePos)
+    print(eePos+object_pos_base)
+    target_rotation=eeRotation*camera_rotation*object_rotation#*send_traj.latest_obj_transform.rotation
+    print("target_rotation",target_rotation)
+    # Rotation matrix for 180 degrees around the x-axis
+    #target_rotation = np.array([
+    #    [1, 0, 0],
+    #    [0, -1, 0],
+    #    [0, 0, -1]
+    #])
+
+
+    goal=ur5_transforms.inverse_kinematics(target,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #to do, get right rotation based on object
+    #goal_borked=object_pos_base[goal[1],goal[2],goal[3],goal[4],goal[5],goal[0]]
+    print("goal",goal)    
+    eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #make second parameter camera offset
     print(eePosGoal)
+
+    #get path from start to goal
     traj=interpolate(start,goal, .1)
+    #traj=goal+[0,0,0,0,0,0,1]
+    #traj=goal
+
+    #return
+    #send path to controller
     n_points=len(traj)//(2*len(joint_names)+1)
-    batch_send=False
+    batch_send=True#False
     speed_multiplier=.1
     messages =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
     ml=messageList()
@@ -427,6 +578,22 @@ def graspObj(send_traj,joint_names):
     print()
     print()
     send_traj.sendMessageList(ml)
+    #get current cfg
+
+    time.sleep(5)
+    start_borked=send_traj.get_latest_joint_state()
+    while len(start_borked) == 0:
+        rclpy.spin_once(send_traj)
+        start_borked=send_traj.get_latest_joint_state()
+    start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
+
+    print("end cfg",start)
+    #get end effector position and rotation
+    eePos,eeRotation=ur5_transforms.forward_kinematics(start,ur5_transforms.dh_params_ur5_w_tool)  #make first param height of gripper
+    eeRotTranspose = np.transpose(eeRotation)#[[eeRotation[j][i] for j in range(len(eeRotation))] for i in range(len(eeRotation[0]))]
+    print("eePos",eePos)
+    print("eeRotation",eeRotation)
+
 
     
 def main(args=None):

@@ -10,6 +10,7 @@ VS:  Execute a visual servoing path that goes to a target sent by the object det
 
 GRASP:  Close the grasper.
 
+
 I will shortly add the following options
 
 SLEEP

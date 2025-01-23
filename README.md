@@ -26,7 +26,10 @@ src/arm_controller/scripts/
 The arm controller requires the following packages
 
 ur_driver:  recieves and executes paths
+
 arm_planner:  Sends motion plans for the arm
+
 object_detection:  Sends target positions used by VS
+
 lh_interfaces:  Defines messages used by object detection
 

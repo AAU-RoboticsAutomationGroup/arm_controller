@@ -703,7 +703,7 @@ def graspObj_w_computation(node,joint_names):
 
 
     
-def graspObj_transform_tree(node,joint_names):
+def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5_base_link"):
     #wait for object presence
     node.wait_for_object_presence()
     print("detected object")
@@ -718,12 +718,12 @@ def graspObj_transform_tree(node,joint_names):
     #get transform of object
     transform_obj = None
     while transform_obj== None:
-        transform_obj=node.get_transform('object', 'little_helper/base_link')
+        transform_obj=node.get_transform(base_name,object_name)
 
-    target_position_v=transform_obj.translation
+    target_position_v=transform_obj.transform.translation
     target_position=[target_position_v.x,target_position_v.y,target_position_v.z]
-    target_position_q=transform_obj.rotation
-    target_position=ur5_transforms.rot_m_from_qu(target_position_q)    
+    target_rotation_q=transform_obj.transform.rotation
+    target_rotation=ur5_transforms.rot_m_from_qu(target_rotation_q)    
     graspObj(node,joint_names,start,target_position,target_rotation)
 
 

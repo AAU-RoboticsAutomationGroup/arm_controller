@@ -13,7 +13,7 @@
   <test_depend>python3-pytest</test_depend>
 
   <depend>lh_interfaces</depend>
-  <depend>object_detection_5G</depend>
+  <depend>object_detection_5g</depend>
   <depend>tf2_ros</depend>
   
   <export>

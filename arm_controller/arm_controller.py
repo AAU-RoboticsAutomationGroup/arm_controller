@@ -403,16 +403,14 @@ class Arm_Controller_Node(Node):
         self.time_to_keypoints=message.time_to_keypoints
         #print("updating statekey")
 
-    #def get_object_presence(self, message: ObjectPresence):
-    #    self.object_position=message.upcoming_keypoints
         
     def goto_feedback_callback(self, feedback_message):
         self.get_logger().info('Feedback: {}'.format(feedback_message))
 
-    def get_latest_joint_state(self):
-        if(self.latest_joint_states_message==None):
-            #print("no joint state recieved")
-            return []
+    def get_joint_state(self):
+        while self.latest_joint_states_message==None:
+            time.sleep(.01)
+            rclpy.spin_once(self)
         return self.latest_joint_states_message.position
         
     def withinTimeOfKeypoint(self, threshold):
@@ -528,74 +526,8 @@ def getCfgFromEEPoint(ee_pos):
     cfg.append(3.141596/2)
     return cfg
 
-#defunct
-#def graspObj_tt(send_traj,joint_names):
-#    #wait for object presence
-#    send_traj.wait_for_object_presence()
-#    print("detected object")
-#        
-#    #get current cfg
-#    start_borked=send_traj.get_latest_joint_state()
-#    while len(start_borked) == 0:
-#        rclpy.spin_once(send_traj)
-#        start_borked=send_traj.get_latest_joint_state()
-#    start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
-#    print("start",start,"__",start_borked)
-#
-#    #get ee pos and rotation from transform tree
-#    transform_obj = None
-#    #while transform_obj == None:
-#    #    transform_obj = send_traj.get_transform('object', 'base_link_inertia')
-#    #print("tr obj",transform_obj)
-#    transform_ee = None
-#    while transform_ee== None:
-#        transform_ee=send_traj.get_transform('wrist_3_link', 'base_link_inertia')
-#        
-#    #get end effector position and rotation
-#    eePos,eeRotation=ur5_transforms.forward_kinematics(start,ur5_transforms.dh_params_ur5)  #make first param height of gripper
-#    eeRotTranspose = np.transpose(eeRotation)#[[eeRotation[j][i] for j in range(len(eeRotation))] for i in range(len(eeRotation[0]))]
-#    print("eePos",eePos,"==",transform_ee.transform.translation)
-#    print("eeRotation",eeRotation,"==",transform_ee.transrrom.rotation)
-#    target = transform_obj.translation
-#    tool_height=.0175
-#    target[2]=target[2]+tool_height
-
-#get goal cfg
-#    print("target")
-#    print(target)
-#    target_rotation=transform_obj.rotation#*send_traj.latest_obj_transform.rotation
-#    goal=ur5_transforms.inverse_kinematics(target,target_rotation,start,ur5_transforms.dh_params_ur5) #to do, get right rotation based on object
-#    print(goal)    
-#    eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5)  #make second parameter camera offset
-#    print(eePosGoal)
-
-#    #get path from start to goal
-#    traj=interpolate(start,goal, .1)
-#    #goal.append([0,0,0,0,0,0,1])
-#    #traj=goal
-#    #return
-#    #send path to controller
-#    n_points=1#len(traj)//(2*len(joint_names)+1)
-#    batch_send=False
-#    speed_multiplier=1
-#    messages =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
-#    ml=messageList()
-#    ml.messages=[messages]
-#    print()
-#    #print("messages")
-#    #print(messages)
-#    print()
-#    print()
-#    send_traj.sendMessageList(ml)   
-#    return
-
 
 def get_adjusted_target(node,target,t):
-    ##base_path: Path = None
-    ##vel_arm_base: Twist = None 
-    #node.current_path_index.PathStatus.current_path_index
-    #time_path_index = node.current_path_index.PathStatus.header.stamp
-    #target_time  = time.now()+t
     if node.vel_arm_base == None:
         return target
     dx=node.vel_arm_base.linear[0]*t
@@ -626,7 +558,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     #return
     #send path to controller
     n_points=len(traj)//(2*len(joint_names)+1)
-    batch_send=False#True#False
+    batch_send=False
     messages =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
     ml=messageList()
     ml.messages=[messages]
@@ -710,14 +642,16 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
         
     #get current cfg
     start_borked=node.get_latest_joint_state()
-    while len(start_borked) == 0:
-        rclpy.spin_once(node)
-        start_borked=node.get_latest_joint_state()
+    #while len(start_borked) == 0:  
+    #    rclpy.spin_once(node)
+    #    start_borked=node.get_latest_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
 
     #get transform of object
     transform_obj = None
     while transform_obj== None:
+        time.sleep(.01)
+        rclpy.spin_once(self)
         transform_obj=node.get_transform(base_name,object_name)
 
     target_position_v=transform_obj.transform.translation

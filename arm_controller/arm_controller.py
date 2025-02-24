@@ -310,21 +310,19 @@ def interpolate(cfg1,cfg2, stepsize,time=.25):
     print(cfg_list)
     return cfg_list
 
-#defunct, replace with code from grasp function                          
-#def replan(node,joint_names,argv):
-#    current=node.joint_states
-#    target=getCfgFromGraspPoint(node.latest_obs_camera_potition)  #may need to adjust for offset
-#    if(len.current==0):
-#        #no current state so can't do replanning
-#        return
-#    #clear buffer
-#    stepsize=.1    
-#    node.upcoming_keypoints=interpolate(current,target, stepsize)
-#    time_step=node.time_to_keypoints[-1]/len(node.upcoming_keypoints)  #aussmes last point of path is grasp time.  Is this a safe assumption?
-#    node.time_to_keypoints=[]    
-#    for i in range(0,len(node.upcoming_keypoints)):
-#        node.time_to_keypoints.append(i*time_step)
-#    node.send_traj(joint_names,argv)
+
+def checkForReverseAngles(start,goal):
+    for i in range(0,len(start)):
+        if start[i]-goal[i] > 3.141596:
+            g_candidate=goal[i]+3.141596*2
+            if ur5_transforms.isInBound(g_candidate,i):
+                goal[i]=g_candidate
+        if goal[i]-start[i] > 3.141596:
+            g_candidate=goal[i]-3.141596*2
+            if ur5_transforms.isInBound(g_candidate,i):
+                goal[i]=g_candidate
+        return goal
+
 
 def find_closest_pose(poses,x):
     best=-1
@@ -565,32 +563,33 @@ def get_adjusted_target(node,target,t):
 
 
 def graspObj(node,joint_names,start,target_position,target_rotation):
-    goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
-    #rotate by 90 degrees so grasps short end of obj
-    if start[5] > goal[5]:
-        goal[5]=goal[5]+3.141596/2
-    else:
-        goal[5]=goal[5]-3.141596/2
-
-    print("goal*****************",goal)
-    goal_ee_pos=ur5_transforms.forward_kinematics_helper(goal,ur5_transforms.dh_params_ur5_w_tool)
-    print("goal_ee_pos*****************",goal_ee_pos)
+    #first go to point above target then go target
+    target_over = target_position
+    d_above = .04
+    target_over[2]=t_over[2]-d_above
+    goal_over=ur5_transforms.inverse_kinematics(target_over,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
+    checkForReverseAngles(start,goal_over)
+    goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,goal_over,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
+    checkForReverseAngles(goal_over,goal)
+    
+    print("goal",goal)
     for g in goal:
         print(180*g/3.141596)
     
     speed_multiplier=.1
-    path_time=4
-    #target_position=get_adjusted_target(node,target_position,path_time*speed_multiplier)
+    path_time=2
+    target_position=get_adjusted_target(node,target_position,path_time*speed_multiplier)
     eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
     
     #get path from start to goal
-    n_steps=10
-    step_size=distance_between_cfgs(start, goal)/n_steps
-    traj=interpolate(start,goal, step_size,path_time)
-    #traj=goal+[0,0,0,0,0,0,1]
-    #traj=goal
+    n_steps=100
+    step_size=distance_between_cfgs(start, goal_over)/n_steps
+    traj_over=interpolate(start,goal_over, step_size,path_time)
+    step_size=distance_between_cfgs(goal_over, goal)/n_steps
+    traj_goal=interpolate(goal_over,goal, step_size,path_time)
+    traj=traj_over + traj_goal
 
-    #return
+    
     #send path to controller
     n_points=len(traj)//(2*len(joint_names)+1)
     batch_send=False
@@ -605,19 +604,19 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     node.sendMessageList(ml)
     #get current cfg
 
-    time.sleep(5)
-    start_borked=node.get_joint_state()
-    cfg_borked=node.get_joint_state()
-    while len(cfg_borked) == 0:
-        rclpy.spin_once(node)
-        cfg_borked=node.get_joint_state()
-    cfg=[cfg_borked[5],cfg_borked[0],cfg_borked[1],cfg_borked[2],cfg_borked[3],cfg_borked[4]]
+    #time.sleep(5)
+    #start_borked=node.get_joint_state()
+    #cfg_borked=node.get_joint_state()
+    #while len(cfg_borked) == 0:
+    #    rclpy.spin_once(node)
+    #    cfg_borked=node.get_joint_state()
+    #cfg=[cfg_borked[5],cfg_borked[0],cfg_borked[1],cfg_borked[2],cfg_borked[3],cfg_borked[4]]
 
-    print("end cfg",cfg)
+    #print("end cfg",cfg)
     #get end effector position and rotation
-    eePos,eeRotation=ur5_transforms.forward_kinematics(cfg,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh
-    print("eePos",eePos)
-    print("eeRotation",eeRotation)
+    #eePos,eeRotation=ur5_transforms.forward_kinematics(cfg,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh
+    #print("eePos",eePos)
+    #print("eeRotation",eeRotation)
 
 
 
@@ -662,8 +661,7 @@ def graspObj_w_computation(node,joint_names):
     T=np.dot(T,obj_T)
     print("t3",T)
     print("diff",T-T_ee)
-    offset_tool=[0,0,.195]
-    target_position = T[:3, 3]#+offset_tool
+    target_position = T[:3, 3]
     print("target position************",target_position)
     target_rotation = T[:3, :3]
     graspObj(node,joint_names,start,target_position,target_rotation)

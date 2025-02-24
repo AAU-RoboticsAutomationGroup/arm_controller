@@ -81,7 +81,7 @@ def distance_between_cfgs(cfg1, cfg2):
 
 def getSetGripperMessage_clawGripper(command):
     openwidth=0.0
-    closewidth=50.0
+    closewidth=20.0
     speed=200.0
     message=""
     if(command=="connect"):
@@ -130,6 +130,7 @@ def getSetGripperMessage_magneticGripper(active):
     return message
         
 def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
+    print("************ in msg list")
     #speed_multiplier=.25
     message_list=[]            
     #if self.latest_joint_states_message is not None:
@@ -138,9 +139,13 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
     #    from_point.velocities = [0.0 for p in from_point.positions]           
     #    goal_message.trajectory.points.append(from_point)
     cfg_last=None
-    duration_last=0
+    time_from_start=0
+    #duration_last=0
+    goal_message = FollowJointTrajectory.Goal()
+    for joint_name in joint_names:
+        goal_message.trajectory.joint_names.append(joint_name)
     for i in range(0,n_points):
-        #print("top of loop")
+        print("top of loop")
         #print(cfg_list)
         start = i*13
         end = start + 12
@@ -149,31 +154,41 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
         start=start+6
         #end = start+12
         vel = [float(cfg_list[j])*speed_multiplier for j in range(start,end)]
-        duration = float(cfg_list[end])/speed_multiplier            
-        res=.25
+        duration = float(cfg_list[end])/speed_multiplier*1000000000  ####removed            
+        res=100.25
         d=0
+ 
         if(i!=0):
             d=distance_between_cfgs(cfg,cfg_last)
         if(d>res):            
             cfg_step=[0,0,0,0,0,0]
-            cfg_step=[cfg_last[j] for j in range(0,len(cfg_last))]
-            duration_step=duration_last
+            cfg_step=[cfg_last[j] for j in range(0,len(cfg_last))]            
             n_steps=int(d//res)
+            duration_step=duration/n_steps
+            vel_step = [float(cfg_list[j])*speed_multiplier/n_steps for j in range(start,end)]
+
             for q in range(0,n_steps):
                 for j in range(0,len(cfg)):
                     cfg_step[j]=cfg_step[j]+(cfg[j]-cfg_last[j])/n_steps
-                duration_step=duration_step+(duration-duration_last)/n_steps
+                #duration_step=duration_step+(duration-duration_last)/n_steps
+                
                 to_point = JointTrajectoryPoint()
                 to_point.positions=cfg_step
                 #print("position in stepping")
                 #print(to_point.positions)
-                to_point.velocities = vel                    
-                to_point.time_from_start = Duration(seconds=duration_step).to_msg()
-                goal_message = FollowJointTrajectory.Goal()
-                
-                for joint_name in joint_names:
-                    goal_message.trajectory.joint_names.append(joint_name)
+                to_point.velocities = vel_step                   ######removed vels 
+                #to_point.time_from_start = Duration(seconds=duration_step).to_msg()
+                to_point.time_from_start = Duration(seconds=0,nanoseconds=time_from_start).to_msg() 
+                time_from_start=time_from_start+duration_step
+                print("time to start", to_point.time_from_start)
+                if not batch_send:
+                    goal_message = FollowJointTrajectory.Goal()                
+                    for joint_name in joint_names:
+                        goal_message.trajectory.joint_names.append(joint_name)
                 goal_message.trajectory.points.append(to_point)
+                print("appending 1",goal_message)
+                print()
+                print()
                 if not batch_send:
                     #print('message =')
                     #print(format(goal_message))
@@ -181,7 +196,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                     goal_message.trajectory.points.clear()
                     goal_message.trajectory.points.append(to_point)
                 cfg_last=cfg
-                duration_last=duration        
+                #duration_last=duration        
         else:
             #print("cfg=")
             #print(cfg)
@@ -193,14 +208,17 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
             to_point.positions=cfg
             #print("pos")
             #print(to_point.positions)
-            to_point.velocities = vel
-            to_point.time_from_start = Duration(seconds=duration).to_msg()
-
-            goal_message = FollowJointTrajectory.Goal()
-            for joint_name in joint_names:
-                goal_message.trajectory.joint_names.append(joint_name)
+            to_point.velocities = vel ###########removed velocities
+            to_point.time_from_start = Duration(seconds=0,nanoseconds=time_from_start).to_msg() 
+            time_from_start=time_from_start+duration
+            print("time to start", to_point.time_from_start)
+            if not batch_send:
+                goal_message = FollowJointTrajectory.Goal()            
+                for joint_name in joint_names:
+                    goal_message.trajectory.joint_names.append(joint_name)
             
             goal_message.trajectory.points.append(to_point)
+            print("appending 1",to_point)
             if not batch_send:
                 #print('message =')
                 #print(format(goal_message))
@@ -208,10 +226,11 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                 goal_message.trajectory.points.clear()
                 goal_message.trajectory.points.append(to_point)
         cfg_last=cfg
-        duration_last=duration
+        #duration_last=duration
     #print("out of the loop")
     if batch_send:
         message_list.append(goal_message)
+    print("goal message",goal_message)
     return message_list
     
 
@@ -242,7 +261,7 @@ class messageList:
                       else:
                           traj = list(map(float,Line.split(' ')))
                           n_points=len(traj)//(2*len(joint_names)+1)
-                          #print(len(traj),len(joint_names)+1,n_points)
+                          print("here",len(traj),len(joint_names)+1,n_points)
                           message =  getTrajMessage(joint_names, n_points, traj, batch_send,speed_multiplier)
                           #interpolate(cfg1,cfg2, stepsize)
                           self.messages.append(message)
@@ -257,22 +276,21 @@ class messageList:
     #def loadFromMessage(self,node):
     #   print("code goes here")
         
-#not, this functions expects positional component of cfg
-#add time 
+#note, this functions expects positional component of cfg
 def interpolate(cfg1,cfg2, stepsize,time=.25):
     n_steps=math.floor(distance_between_cfgs(cfg1, cfg2)/stepsize)
-    n_steps=0
-    print(n_steps)
+    #n_steps=0
+    print("interpolate n steps", n_steps)
     steps=[cfg2]
     v=[]
     for i in range(0,len(cfg1)):
-      v.append((cfg1[i]-cfg2[i])/n_steps)
+        v.append((cfg1[i]-cfg2[i])/(n_steps+1))
     cfg_list=[]
-    for i in range(0,n_steps+1):
+    for i in range(0,n_steps):
         cfg_step=[]
         #cfg_list=cfg_list+[0,0,0,0,0,0,0,0,0,0,0,0]
         for j in range(0,len(cfg1)):
-            x=(cfg1[j]*i+cfg2[j]*(n_steps-i))/n_steps #todo:  change first cfg2 to cfg1 to do correctly after testing
+            x=(cfg2[j]*i+cfg1[j]*(n_steps+1-i))/(n_steps+1) #todo:  change first cfg2 to cfg1 to do correctly after testing
             if(i==n_steps):
                 x=cfg2[j]
             cfg_step.append(x)
@@ -280,7 +298,13 @@ def interpolate(cfg1,cfg2, stepsize,time=.25):
             #cfg_list.append(v[j])
         steps.append(cfg_step)
         cfg_list=cfg_list+v
-        cfg_list.append(i*time/(n_steps+1))
+        cfg_list.append(time/(n_steps+1))
+    cfg_step=[]
+    #for j in range(0,len(cfg1)):
+    #    cfg_step.append(cfg2[j])
+    #    cfg_list.append(cfg2[j])
+    #steps.append(cfg_step)
+    cfg_list=cfg_list+v
     print(steps)
     print("cfg list")
     print(cfg_list)
@@ -333,7 +357,8 @@ def get_pregrasp(poses,target,grasp_motion_duration):
     target_rotation = vector_to_rotation_matrix(v)    
     cfg = inverse_kinematics(target_ee_position, target_rotation,initial_guess,dh_params_ur5)
     return cfg
-    
+
+
 class Arm_Controller_Node(Node):
     #my_waypoint: JointState = None
     latest_joint_states_message: JointState = None
@@ -349,18 +374,19 @@ class Arm_Controller_Node(Node):
     
     def __init__(self) -> None:
         super().__init__('send_traj')
-        self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states', self.get_joint_states, 10)#take out if causes error
-        self.statekey_subscriber = self.create_subscription(Statekey, '/statekey', self.get_statekey, 10)#take out if causes error
+        self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states', self.get_joint_states, 1)#take out if causes error
+        self.statekey_subscriber = self.create_subscription(Statekey, '/statekey', self.get_statekey, 1)#take out if causes error
         self.follow_joint_trajectory_action_client = ActionClient(self, FollowJointTrajectory, '/scaled_joint_trajectory_controller/follow_joint_trajectory')
-        self.object_detection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 2)
+        self.object_detection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 1)
         self.tf_subscriber = self.create_subscription(TFMessage, '/tf', self.get_tf, 10)#take out if causes error
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.arm_motion_plan_subscriber = self.create_subscription(String, '/arm_plan', self.save_arm_plan, 10)
         self.base_path_subscriber = self.create_subscription(Path, '/plan', self.save_base_plan, 10)
-        self.arm_base_vel_subscriber = self.create_subscription(Twist, '/vel_arm_base', self.save_vel_arm_base, 10)
-        self.grasping_path_state_subscriber = self.create_subscription(PathStatus, '/grasping_path_state', self.save_grasping_path_state, 10)
+        self.arm_base_vel_subscriber = self.create_subscription(Twist, '/vel_arm_base', self.save_vel_arm_base, 1)
+        self.grasping_path_state_subscriber = self.create_subscription(PathStatus, '/grasping_path_state', self.save_grasping_path_state, 1)
 
+        
     def save_arm_plan(self, message: String):
         print("got arm plan message",message)
         self.arm_plan_buffer.put(message)
@@ -497,8 +523,9 @@ class Arm_Controller_Node(Node):
                     if (self.follow_joint_trajectory_action_client.wait_for_server(timeout_sec=10) is False):
                         return
                     print("sending 2")
-                    time.sleep(.1)
-                    self.follow_joint_trajectory_action_client.send_goal_async(message, feedback_callback=self.goto_feedback_callback)            
+                    
+                    self.follow_joint_trajectory_action_client.send_goal_async(message, feedback_callback=self.goto_feedback_callback)
+                    time.sleep(.75)
                     print("sent")
                     self.get_logger().info('Sending goal: {}'.format(message))
 
@@ -539,18 +566,26 @@ def get_adjusted_target(node,target,t):
 
 def graspObj(node,joint_names,start,target_position,target_rotation):
     goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
-    print("goal",goal)
+    #rotate by 90 degrees so grasps short end of obj
+    if start[5] > goal[5]:
+        goal[5]=goal[5]+3.141596/2
+    else:
+        goal[5]=goal[5]-3.141596/2
+
+    print("goal*****************",goal)
+    goal_ee_pos=ur5_transforms.forward_kinematics_helper(goal,ur5_transforms.dh_params_ur5_w_tool)
+    print("goal_ee_pos*****************",goal_ee_pos)
     for g in goal:
         print(180*g/3.141596)
     
     speed_multiplier=.1
-    path_time=2
-    target_position=get_adjusted_target(node,target_position,path_time*speed_multiplier)
+    path_time=4
+    #target_position=get_adjusted_target(node,target_position,path_time*speed_multiplier)
     eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
     
     #get path from start to goal
-    n_steps=100
-    step_size=distance_between_cfgs(start, goal)/100
+    n_steps=10
+    step_size=distance_between_cfgs(start, goal)/n_steps
     traj=interpolate(start,goal, step_size,path_time)
     #traj=goal+[0,0,0,0,0,0,1]
     #traj=goal
@@ -571,11 +606,11 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     #get current cfg
 
     time.sleep(5)
-    start_borked=node.get_latest_joint_state()
-    cfg_borked=node.get_latest_joint_state()
+    start_borked=node.get_joint_state()
+    cfg_borked=node.get_joint_state()
     while len(cfg_borked) == 0:
         rclpy.spin_once(node)
-        cfg_borked=node.get_latest_joint_state()
+        cfg_borked=node.get_joint_state()
     cfg=[cfg_borked[5],cfg_borked[0],cfg_borked[1],cfg_borked[2],cfg_borked[3],cfg_borked[4]]
 
     print("end cfg",cfg)
@@ -593,12 +628,12 @@ def graspObj_w_computation(node,joint_names):
     print("detected object")
         
     #get current cfg
-    start_borked=node.get_latest_joint_state()
+    start_borked=node.get_joint_state()
     while len(start_borked) == 0:
         rclpy.spin_once(node)
-        start_borked=node.get_latest_joint_state()
+        start_borked=node.get_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
-    print("start",start,"__",start_borked)
+    print("start*************",start,"__",start_borked)
     T_ee=ur5_transforms.forward_kinematics_helper(start,ur5_transforms.dh_params_ur5)
     print("T",T_ee)
     
@@ -629,7 +664,7 @@ def graspObj_w_computation(node,joint_names):
     print("diff",T-T_ee)
     offset_tool=[0,0,.195]
     target_position = T[:3, 3]#+offset_tool
-    print("tp",target_position)
+    print("target position************",target_position)
     target_rotation = T[:3, :3]
     graspObj(node,joint_names,start,target_position,target_rotation)
 
@@ -641,7 +676,7 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
     print("detected object")
         
     #get current cfg
-    start_borked=node.get_latest_joint_state()
+    start_borked=node.get_joint_state()
     #while len(start_borked) == 0:  
     #    rclpy.spin_once(node)
     #    start_borked=node.get_latest_joint_state()
@@ -649,15 +684,28 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
 
     #get transform of object
     transform_obj = None
-    while transform_obj== None:
-        time.sleep(.01)
-        rclpy.spin_once(self)
+    while transform_obj == None:
+        #time.sleep(.01)
+        rclpy.spin_once(node, timeout_sec=0.1)
         transform_obj=node.get_transform(base_name,object_name)
-
+    print("transform object",transform_obj)
     target_position_v=transform_obj.transform.translation
-    target_position=[target_position_v.x,target_position_v.y,target_position_v.z]
+    object_height=.035
+    target_position=[-target_position_v.x,-target_position_v.y,target_position_v.z-object_height]
+    print("target position",target_position)
     target_rotation_q=transform_obj.transform.rotation
-    target_rotation=ur5_transforms.rot_m_from_qu(target_rotation_q)    
+    target_rotation=ur5_transforms.rot_m_from_qu(target_rotation_q)
+
+    print("target rotation",target_rotation)    
+
+    #rotate ny 90 degrees so grasps along shorter diemntion
+    #rot_90=np.array([[0, -1, 0],
+    #                 [1, 0, 0],
+    #                 [0, 0, 1]])
+    #target_rotation_rotated_90=np.dot(target_rotation,rot_90)
+    #target_rotation=np.dot(target_rotation_a,rot_90)
+
+    #print("target rotation",target_rotation_rotated_90)    
     graspObj(node,joint_names,start,target_position,target_rotation)
 
 

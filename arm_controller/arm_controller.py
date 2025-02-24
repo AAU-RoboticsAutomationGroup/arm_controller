@@ -273,8 +273,6 @@ class messageList:
         Lines = file1.readlines()
         self.loadFromArrOfStrings(joint_names, Lines,speed_multiplier)
 
-    #def loadFromMessage(self,node):
-    #   print("code goes here")
         
 #note, this functions expects positional component of cfg
 def interpolate(cfg1,cfg2, stepsize,time=.25):
@@ -454,9 +452,7 @@ class Arm_Controller_Node(Node):
             time.sleep(.01)
             rclpy.spin_once(self)
 
-    #################Add inturrupt to this function to do replanning        
     def wait_for_keypoint_or_position(self, threshold):
-        ##########write this
         while not self.withinTimeOfKeypoint(threshold):
             time.sleep(.01)
             rclpy.spin_once(self)
@@ -675,9 +671,6 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
         
     #get current cfg
     start_borked=node.get_joint_state()
-    #while len(start_borked) == 0:  
-    #    rclpy.spin_once(node)
-    #    start_borked=node.get_latest_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
 
     #get transform of object
@@ -696,14 +689,6 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
 
     print("target rotation",target_rotation)    
 
-    #rotate ny 90 degrees so grasps along shorter diemntion
-    #rot_90=np.array([[0, -1, 0],
-    #                 [1, 0, 0],
-    #                 [0, 0, 1]])
-    #target_rotation_rotated_90=np.dot(target_rotation,rot_90)
-    #target_rotation=np.dot(target_rotation_a,rot_90)
-
-    #print("target rotation",target_rotation_rotated_90)    
     graspObj(node,joint_names,start,target_position,target_rotation)
 
 
@@ -747,24 +732,6 @@ def main(args=None):
         else:
             print("script command not recognized:",line)
     return
-    while node.arm_plan==None:
-        rclpy.spin_once(node)
-    print("recieved path",node.arm_plan)
-    mess=messageList()
-    mess.loadFromArrOfStrings(joint_names,node.arm_plan.data.splitlines(),.1)
-    node.arm_plan=None
-    node.sendMessageList(mess)
-    return
-    print("send traj")
-    if(str(sys.argv[1])=="-f"):
-        mess=messageList()
-        mess.loadFromFile(joint_names,sys.argv[2],.1)
-        #waitForTrigger()
-        node.sendMessageList(mess)
-    if(str(sys.argv[1])=="-topic"):
-        print("read from topic")
-    else:
-        node.send_traj(joint_names,sys.argv)
 
         
 if __name__ == '__main__':

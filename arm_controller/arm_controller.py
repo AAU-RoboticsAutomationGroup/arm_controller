@@ -386,8 +386,9 @@ class Arm_Controller_Node(Node):
         self.arm_motion_plan_subscriber = self.create_subscription(String, '/arm_plan', self.save_arm_plan, 10)
         self.base_path_subscriber = self.create_subscription(Path, '/plan', self.save_base_plan, 10)
         self.arm_base_vel_subscriber = self.create_subscription(TwistStamped, '/vel_arm_base', self.save_vel_arm_base, 1)
-        self.grasping_path_state_subscriber = self.create_subscription(PathStatus, '/grasping_path_state', self.save_grasping_path_state, 1)
-
+        self.grasping_path_state_subscriber = self.create_subscription(PathStatus, 'grasping_path_status', self.save_grasping_path_state, 1)
+        self.grasping_path_state = PathStatus()
+        self.grasping_path_state.trigger = False
         # Publishers
         self.gripper_connect_publisher = self.create_publisher(Empty, "/wsg_50/connect", 10)
         self.gripper_disconnect_publisher = self.create_publisher(Empty, "/wsg_50/disconnect", 10)
@@ -472,8 +473,9 @@ class Arm_Controller_Node(Node):
     def get_object_presence(self, message: ObjectPresence):
         #print("object present")
         self.object_presence=message.object_present
-        print("object detected, performing vs")
+        self.get_logger().info("object detected, waiting for grasping path to perform vs")
         if self.object_presence and self.grasping_path_state.trigger:
+            print("object and grasping path detected, perfroming vs")
             self.grasp_point=graspObj_transform_tree(self,joint_names,"object","ur5_base_link")
             self.publish_gripper_msg("grasp")
         
@@ -481,7 +483,7 @@ class Arm_Controller_Node(Node):
         #print("got tf")
         if len(message.transforms)==0:
            return
-        print(message.transforms[0].child_frame_id)
+        #print(message.transforms[0].child_frame_id)
         if message.transforms[0].child_frame_id == "object":
             self.latest_obj_transform=message.transforms[0].transform
         #print(self.latest_obj_transform)
@@ -619,8 +621,8 @@ def get_adjusted_target(node,target,t):
         print("velocity not recieved, not offsetting target")
         return target
     
-    dx_base=node.vel_arm_base.twist.linear[0]*t
-    dy_base=node.vel_arm_base.twist.linear[1]*t
+    dx_base=node.vel_arm_base.twist.linear.x*t
+    dy_base=node.vel_arm_base.twist.linear.y*t
 
     #adjust for fact that arm is at 45 degree angle
     # dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
@@ -629,9 +631,10 @@ def get_adjusted_target(node,target,t):
     # new base vel is the items movement in the ur5_base_link frame 
     dx_arm = dx_base 
     dy_arm = dy_base 
-
-    target[0]=target[0]+dx_arm
-    target[1]=target[1]+dy_arm
+    node.get_logger().info(f"initial target {target}")
+    target[0]=target[0]-dx_arm
+    target[1]=target[1]-dy_arm
+    node.get_logger().info(f"target with vel pred {target} with vel {[dx_base, dy_base]}")
     return target
 
 
@@ -655,11 +658,12 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     print("goal",goal)
     for g in goal:
         print(180*g/3.141596)
+        node.get_logger().info(f"goal in deg {180*g/180}")
 
     
     #target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)*speed_multiplier)
     eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
-
+    node.get_logger().info(f"computed eePosGoal {eePosGoal}")
     #rotate by 90 so grasping short end
     #if goal[5]>start[5]:
     #    goal[5]=goal[5]-3.141596/2
@@ -693,6 +697,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     print(messages)
     print()
     print()
+    node.get_logger().info("sending trj message")
     node.sendMessageList(ml)
 
 

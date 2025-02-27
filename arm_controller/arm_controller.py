@@ -136,6 +136,9 @@ def getSetGripperMessage_magneticGripper(active):
 def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
     print("************ in msg list")
     #speed_multiplier=.25
+    rate = 50
+    delay_between_msg=speed_multiplier*1.0/rate
+
     message_list=[]            
     #if self.latest_joint_states_message is not None:
     #    from_point = JointTrajectoryPoint()
@@ -158,7 +161,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
         start=start+6
         #end = start+12
         vel = [float(cfg_list[j])*speed_multiplier for j in range(start,end)]
-        duration = float(cfg_list[end])/speed_multiplier*1000000000  ####1000000000 is convertion to nanoseconds            
+        duration = float(cfg_list[end])*speed_multiplier*1000000000  ####1000000000 is convertion to nanoseconds            
         res=100.25
         d=0
  
@@ -183,7 +186,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                 to_point.velocities = vel_step                   ######removed vels 
                 #to_point.time_from_start = Duration(seconds=duration_step).to_msg()
                 to_point.time_from_start = Duration(seconds=0,nanoseconds=time_from_start).to_msg() 
-                time_from_start=time_from_start+duration_step
+                time_from_start=time_from_start+duration_step-delay_between_msg
                 print("time to start", to_point.time_from_start)
                 if not batch_send:
                     goal_message = FollowJointTrajectory.Goal()                
@@ -214,7 +217,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
             #print(to_point.positions)
             to_point.velocities = vel ###########removed velocities
             to_point.time_from_start = Duration(seconds=0,nanoseconds=time_from_start).to_msg() 
-            time_from_start=time_from_start+duration
+            time_from_start=time_from_start+duration-delay_between_msg
             print("time to start", to_point.time_from_start)
             if not batch_send:
                 goal_message = FollowJointTrajectory.Goal()            
@@ -565,7 +568,10 @@ class Arm_Controller_Node(Node):
             self.get_logger().info('Sending goal: {}'.format(goal_message))
       
 
-    def sendMessageList(self, messageList):
+    def sendMessageList(self, messageList,speed_multiplier):
+        rclcpp::QoS qos(rclcpp::KeepLast(len(messageList)+100));
+        rate = 50
+        delay_between_msg=speed_multiplier*1.0/rate
         for message_plan in messageList.messages:
             for message in message_plan:
                 if(type(message)==str):
@@ -586,7 +592,7 @@ class Arm_Controller_Node(Node):
                     print("sending 2")
                     
                     self.follow_joint_trajectory_action_client.send_goal_async(message, feedback_callback=self.goto_feedback_callback)
-                    time.sleep(.5)
+                    time.sleep(delay_between_msg)
                     print("sent")
                     self.get_logger().info('Sending goal: {}'.format(message))
 
@@ -638,13 +644,14 @@ def get_adjusted_target(node,target,t):
     return target
 
 
-def graspObj(node,joint_names,start,target_position,target_rotation):
+def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_transform=""):
     clearance=-.04
-    speed_multiplier=.5
+    speed_multiplier=1
     path_time_over=2
     path_time_goal=.25
-    t_tf_delay=.2
-    target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal+t_tf_delay)*speed_multiplier)
+    #t_tf_delay=.2
+    tf_delay= (timestamp_transform-node.get_clock().now())/1e9
+    target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)/speed_multiplier+tf_delay)
     target_position[2]=target_position[2]+clearance
     #first go to point above target then go target
     target_over = target_position
@@ -698,7 +705,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     print()
     print()
     node.get_logger().info("sending trj message")
-    node.sendMessageList(ml)
+    node.sendMessageList(ml,speed_multiplier)
 
 
     
@@ -788,6 +795,7 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
     print()
     print("transform object= ",transform_obj)
     print()
+    timestamp_transform = transform_obj.header.stamp
     target_position_v=transform_obj.transform.translation
     object_height=.035
     target_position=[-target_position_v.x,-target_position_v.y,target_position_v.z-object_height]
@@ -797,7 +805,7 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
 
     print("target rotation",target_rotation)    
 
-    return graspObj(node,joint_names,start,target_position,target_rotation)
+    return graspObj(node,joint_names,start,target_position,target_rotation,timestamp_transform)
 
 
     

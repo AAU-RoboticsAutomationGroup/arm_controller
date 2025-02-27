@@ -45,7 +45,6 @@ from std_msgs.msg import String
 import math
 import queue
 
-joint_names=[ 'shoulder_pan_joint','shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']  
 
 ############################
 
@@ -79,10 +78,10 @@ def distance_between_cfgs(cfg1, cfg2):
     d=pow(d,.5)
     return d
 
-"""
+
 def getSetGripperMessage_clawGripper(command):
     openwidth=0.0
-    closewidth=30.0
+    closewidth=20.0
     speed=200.0
     message=""
     if(command=="connect"):
@@ -112,9 +111,7 @@ def getSetGripperMessage_clawGripper(command):
         message=["/wsg_50/gripper_state",msg]
     print(message)
     return message
-"""
 
-"""
 def publish_gripper_msg(command,node):
     msg=getSetGripperMessage_clawGripper(command)
     publisher=node.create_publisher(MoveFingers, msg[0], 10)
@@ -122,7 +119,6 @@ def publish_gripper_msg(command,node):
     #node.timer = node.create_timer(2.0, node.publish_message)
     publisher.publish(msg[1])
     node.get_logger().info(f'Publishing: "{msg}"')
-"""
     
     
 def getSetGripperMessage_magneticGripper(active):
@@ -158,7 +154,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
         start=start+6
         #end = start+12
         vel = [float(cfg_list[j])*speed_multiplier for j in range(start,end)]
-        duration = float(cfg_list[end])/speed_multiplier*1000000000  ####1000000000 is convertion to nanoseconds            
+        duration = float(cfg_list[end])/speed_multiplier*1000000000  ####removed            
         res=100.25
         d=0
  
@@ -277,6 +273,8 @@ class messageList:
         Lines = file1.readlines()
         self.loadFromArrOfStrings(joint_names, Lines,speed_multiplier)
 
+    #def loadFromMessage(self,node):
+    #   print("code goes here")
         
 #note, this functions expects positional component of cfg
 def interpolate(cfg1,cfg2, stepsize,time=.25):
@@ -312,19 +310,21 @@ def interpolate(cfg1,cfg2, stepsize,time=.25):
     print(cfg_list)
     return cfg_list
 
-
-def checkForReverseAngles(start,goal):
-    for i in range(0,len(start)):
-        if start[i]-goal[i] > 3.141596:
-            g_candidate=goal[i]+3.141596*2
-            if ur5_transforms.isInBound(g_candidate,i):
-                goal[i]=g_candidate
-        if goal[i]-start[i] > 3.141596:
-            g_candidate=goal[i]-3.141596*2
-            if ur5_transforms.isInBound(g_candidate,i):
-                goal[i]=g_candidate
-        return goal
-
+#defunct, replace with code from grasp function                          
+#def replan(node,joint_names,argv):
+#    current=node.joint_states
+#    target=getCfgFromGraspPoint(node.latest_obs_camera_potition)  #may need to adjust for offset
+#    if(len.current==0):
+#        #no current state so can't do replanning
+#        return
+#    #clear buffer
+#    stepsize=.1    
+#    node.upcoming_keypoints=interpolate(current,target, stepsize)
+#    time_step=node.time_to_keypoints[-1]/len(node.upcoming_keypoints)  #aussmes last point of path is grasp time.  Is this a safe assumption?
+#    node.time_to_keypoints=[]    
+#    for i in range(0,len(node.upcoming_keypoints)):
+#        node.time_to_keypoints.append(i*time_step)
+#    node.send_traj(joint_names,argv)
 
 def find_closest_pose(poses,x):
     best=-1
@@ -371,12 +371,10 @@ class Arm_Controller_Node(Node):
     base_path: Path = None
     vel_arm_base: Twist = None 
     grasping_path_state: PathStatus = None
-    grasp_point=[]
-    grasp_threshold_distance=.01
     
     def __init__(self) -> None:
         super().__init__('send_traj')
-        self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states', self.save_joint_state, 1)#take out if causes error
+        self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states', self.get_joint_states, 1)#take out if causes error
         self.statekey_subscriber = self.create_subscription(Statekey, '/statekey', self.get_statekey, 1)#take out if causes error
         self.follow_joint_trajectory_action_client = ActionClient(self, FollowJointTrajectory, '/scaled_joint_trajectory_controller/follow_joint_trajectory')
         self.object_detection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence, 1)
@@ -388,60 +386,17 @@ class Arm_Controller_Node(Node):
         self.arm_base_vel_subscriber = self.create_subscription(Twist, '/vel_arm_base', self.save_vel_arm_base, 1)
         self.grasping_path_state_subscriber = self.create_subscription(PathStatus, '/grasping_path_state', self.save_grasping_path_state, 1)
 
-        # Publishers
-        self.gripper_connect_publisher = self.create_publisher(Empty, "/wsg_50/connect", 10)
-        self.gripper_disconnect_publisher = self.create_publisher(Empty, "/wsg_50/disconnect", 10)
-        self.gripper_preposition_publisher = self.create_publisher(MoveFingers, "/wsg_50/preposition", 10)
-        self.gripper_grasp_publisher = self.create_publisher(MoveFingers, "/wsg_50/grasp", 10)
-        self.gripper_release_publisher = self.create_publisher(MoveFingers, "/wsg_50/release", 10)
-
-    def publish_gripper_msg(self, command):
-        openwidth = 0.0
-        closewidth = 30.0
-        speed = 200.0
-        msg = None
-        if (command == "connect"):
-            msg = Empty()
-            self.gripper_connect_publisher.publish(msg)
-        elif (command == "disconnect"):
-            msg = Empty()
-            self.gripper_disconnect_publisher.publish(msg)
-        elif (command == "preposition"):
-            msg = MoveFingers()
-            msg.width = openwidth
-            msg.speed = speed
-            self.gripper_preposition_publisher.publish(msg)
-            self.get_logger().info("prepos", msg)
-        elif (command == "grasp"):
-            msg = MoveFingers()
-            msg.width = closewidth
-            msg.speed = speed
-            self.gripper_grasp_publisher.publish(msg)
-        elif (command == "release"):
-            msg = MoveFingers()
-            msg.width = openwidth
-            msg.speed = speed
-            self.gripper_release_publisher.publish(msg)
-
-        self.get_logger().info(f"Published: {msg}")
-
+        
     def save_arm_plan(self, message: String):
         print("got arm plan message",message)
         self.arm_plan_buffer.put(message)
-        arm_plan=get_arm_plan()    
-        print("recieved path",arm_plan)
-        mess=messageList()
-        mess.loadFromArrOfStrings(joint_names,arm_plan.data.splitlines(),1)     
-        sendMessageList(mess)
-        #send_traj.setupTfListener()
-        ur5_transforms.testEEPosTransform()
 
     def save_base_plan(self, message: Path):
         print("got base plan message",message)
         self.base_plan = message
         
     def save_vel_arm_base(self, message: Twist):
-        print("got vel_arm_base message",message)
+        print("got _vel_arm_base message",message)
         self.vel_arm_base = message
 
     def save_grasping_path_state(self, message: PathStatus):
@@ -452,30 +407,13 @@ class Arm_Controller_Node(Node):
     def get_arm_plan(self):
         return self.arm_plan_buffer.get()
         
-    def save_joint_state(self, message: JointState):
+    def get_joint_states(self, message: JointState):
+        #print("got mess",message)
         self.latest_joint_states_message = message
-        print()
-        print("comparing to grasp point",self.grasp_point)
-        if len(self.grasp_point)!=0:
-            current_cfg_borked = self.latest_joint_states_message.position
-            current_cfg=[current_cfg_borked[5],current_cfg_borked[0],current_cfg_borked[1],current_cfg_borked[2],current_cfg_borked[3],current_cfg_borked[4]]
-            print()
-            print(current_cfg)
-            print()
-            print(distance_between_cfgs(current_cfg,self.grasp_point))
-            if distance_between_cfgs(current_cfg, self.grasp_point) < self.grasp_threshold_distance:
-                print("is in distance, triggering gripper")
-                self.publish_gripper_msg("grasp")
-                self.grasp_point=[]
-                
-            
+        
     def get_object_presence(self, message: ObjectPresence):
         #print("object present")
         self.object_presence=message.object_present
-        print("object detected, performing vs")
-        if self.object_presence:
-            self.grasp_point=graspObj_transform_tree(self,joint_names,"object","ur5_base_link")
-            self.publish_gripper_msg("grasp")
         
     def get_tf(self, message: TFMessage):
         #print("got tf")
@@ -497,7 +435,7 @@ class Arm_Controller_Node(Node):
 
     def get_joint_state(self):
         while self.latest_joint_states_message==None:
-            print("warning:  arm controller expects joint states to be sent prior to object detection trigger")
+            time.sleep(.01)
             rclpy.spin_once(self)
         return self.latest_joint_states_message.position
         
@@ -518,12 +456,15 @@ class Arm_Controller_Node(Node):
             time.sleep(.01)
             rclpy.spin_once(self)
 
+    #################Add inturrupt to this function to do replanning        
     def wait_for_keypoint_or_position(self, threshold):
+        ##########write this
         while not self.withinTimeOfKeypoint(threshold):
             time.sleep(.01)
             rclpy.spin_once(self)
             if(self.latest_obs_camera_potition!=None):
-                #call grasp object function which goes to position given by object detection                
+                #call grasp object function which goes to position given by object detection
+                joint_names=[ 'shoulder_pan_joint','shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']  #this is very very bad.  Need to change to pass this as a paremeter
                 graspObj_transform_tree(self,joint_names)
                 #replan(self,joint_names,[])
 
@@ -584,7 +525,7 @@ class Arm_Controller_Node(Node):
                     print("sending 2")
                     
                     self.follow_joint_trajectory_action_client.send_goal_async(message, feedback_callback=self.goto_feedback_callback)
-                    time.sleep(.5)
+                    time.sleep(.75)
                     print("sent")
                     self.get_logger().info('Sending goal: {}'.format(message))
 
@@ -614,70 +555,42 @@ def getCfgFromEEPoint(ee_pos):
 
 
 def get_adjusted_target(node,target,t):
-
     if node.vel_arm_base == None:
-        print("velocity not recieved, not offsetting target")
         return target
-    
-    dx_base=node.vel_arm_base.linear[0]*t
-    dy_base=node.vel_arm_base.linear[1]*t
-
-    #adjust for fact that arm is at 45 degree angle
-    dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
-    dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
-    
-    target[0]=target[0]+dx_arm
-    target[1]=target[1]+dy_arm
+    dx=node.vel_arm_base.linear[0]*t
+    dy=node.vel_arm_base.linear[1]*t
+    target[0]=target[0]+dx
+    target[1]=target[1]+dy
     return target
 
 
 def graspObj(node,joint_names,start,target_position,target_rotation):
-    clearance=-.04
-    speed_multiplier=.5
-    path_time_over=2
-    path_time_goal=.25
-    t_tf_delay=.2
-    target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal+t_tf_delay)*speed_multiplier)
-    target_position[2]=target_position[2]+clearance
-    #first go to point above target then go target
-    target_over = target_position
-    d_above = .08
-    target_over[2]=target_over[2]+d_above
-    goal_over=ur5_transforms.inverse_kinematics(target_over,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
-    checkForReverseAngles(start,goal_over)
-    goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,goal_over,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
-    checkForReverseAngles(goal_over,goal)
-    
-    print("goal",goal)
+    goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,start,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
+    #rotate by 90 degrees so grasps short end of obj
+    if start[5] > goal[5]:
+        goal[5]=goal[5]+3.141596/2
+    else:
+        goal[5]=goal[5]-3.141596/2
+
+    print("goal*****************",goal)
+    goal_ee_pos=ur5_transforms.forward_kinematics_helper(goal,ur5_transforms.dh_params_ur5_w_tool)
+    print("goal_ee_pos*****************",goal_ee_pos)
     for g in goal:
         print(180*g/3.141596)
-
     
-    #target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)*speed_multiplier)
+    speed_multiplier=.1
+    path_time=4
+    #target_position=get_adjusted_target(node,target_position,path_time*speed_multiplier)
     eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
-
-    #rotate by 90 so grasping short end
-    #if goal[5]>start[5]:
-    #    goal[5]=goal[5]-3.141596/2
-    #    goal_over[5]=goal_over[5]-3.141596/2
-    #else:
-    #    goal[5]=goal[5]+3.141596/2
-    #    goal_over[5]=goal_over[5]+3.141596/2
     
     #get path from start to goal
-    n_steps_over=10
-    step_size=distance_between_cfgs(start, goal_over)/n_steps_over
-    traj_over=interpolate(start,goal, step_size,path_time_over)
-    n_steps_goal=3
-    path_time=1
-    step_size=d_above/n_steps_goal
-    traj_goal=interpolate(goal_over,goal, step_size,path_time_goal)
-    traj=traj_over+traj_goal
+    n_steps=10
+    step_size=distance_between_cfgs(start, goal)/n_steps
+    traj=interpolate(start,goal, step_size,path_time)
+    #traj=goal+[0,0,0,0,0,0,1]
+    #traj=goal
 
-    print("traj:")
-    print(traj)
-    print
-    
+    #return
     #send path to controller
     n_points=len(traj)//(2*len(joint_names)+1)
     batch_send=False
@@ -690,25 +603,22 @@ def graspObj(node,joint_names,start,target_position,target_rotation):
     print()
     print()
     node.sendMessageList(ml)
-
-
-    
     #get current cfg
 
-    #time.sleep(5)
-    #start_borked=node.get_joint_state()
-    #cfg_borked=node.get_joint_state()
-    #while len(cfg_borked) == 0:
-    #    rclpy.spin_once(node)
-    #    cfg_borked=node.get_joint_state()
-    #cfg=[cfg_borked[5],cfg_borked[0],cfg_borked[1],cfg_borked[2],cfg_borked[3],cfg_borked[4]]
+    time.sleep(5)
+    start_borked=node.get_joint_state()
+    cfg_borked=node.get_joint_state()
+    while len(cfg_borked) == 0:
+        rclpy.spin_once(node)
+        cfg_borked=node.get_joint_state()
+    cfg=[cfg_borked[5],cfg_borked[0],cfg_borked[1],cfg_borked[2],cfg_borked[3],cfg_borked[4]]
 
-    #print("end cfg",cfg)
+    print("end cfg",cfg)
     #get end effector position and rotation
-    #eePos,eeRotation=ur5_transforms.forward_kinematics(cfg,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh
-    #print("eePos",eePos)
-    #print("eeRotation",eeRotation)
-    return goal
+    eePos,eeRotation=ur5_transforms.forward_kinematics(cfg,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh
+    print("eePos",eePos)
+    print("eeRotation",eeRotation)
+
 
 
 
@@ -752,33 +662,33 @@ def graspObj_w_computation(node,joint_names):
     T=np.dot(T,obj_T)
     print("t3",T)
     print("diff",T-T_ee)
-    target_position = T[:3, 3]
+    offset_tool=[0,0,.195]
+    target_position = T[:3, 3]#+offset_tool
     print("target position************",target_position)
     target_rotation = T[:3, :3]
-    return graspObj(node,joint_names,start,target_position,target_rotation)
+    graspObj(node,joint_names,start,target_position,target_rotation)
 
 
     
 def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5_base_link"):
     #wait for object presence
-    #node.wait_for_object_presence()
-    #print("detected object")
+    node.wait_for_object_presence()
+    print("detected object")
         
     #get current cfg
     start_borked=node.get_joint_state()
+    #while len(start_borked) == 0:  
+    #    rclpy.spin_once(node)
+    #    start_borked=node.get_latest_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
 
     #get transform of object
-    transform_obj=node.get_transform(base_name,object_name)
+    transform_obj = None
     while transform_obj == None:
-        print("warning: arm controller expects object transform tree to be sent prior to object detection trigger.")
+        #time.sleep(.01)
         rclpy.spin_once(node, timeout_sec=0.1)
         transform_obj=node.get_transform(base_name,object_name)
-    print()
-    print("Current Time = ",node.get_clock().now())
-    print()
-    print("transform object= ",transform_obj)
-    print()
+    print("transform object",transform_obj)
     target_position_v=transform_obj.transform.translation
     object_height=.035
     target_position=[-target_position_v.x,-target_position_v.y,target_position_v.z-object_height]
@@ -788,11 +698,19 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
 
     print("target rotation",target_rotation)    
 
-    return graspObj(node,joint_names,start,target_position,target_rotation)
+    #rotate ny 90 degrees so grasps along shorter diemntion
+    #rot_90=np.array([[0, -1, 0],
+    #                 [1, 0, 0],
+    #                 [0, 0, 1]])
+    #target_rotation_rotated_90=np.dot(target_rotation,rot_90)
+    #target_rotation=np.dot(target_rotation_a,rot_90)
+
+    #print("target rotation",target_rotation_rotated_90)    
+    graspObj(node,joint_names,start,target_position,target_rotation)
 
 
     
-def main_script(args=None):
+def main(args=None):
     print("here")
     args_init=None   
     rclpy.init(args=args_init)
@@ -810,8 +728,6 @@ def main_script(args=None):
     #time.sleep(3)
     #publish_gripper_msg("release",send_traj)
     #return
-
-    
     for line in Lines:
         line=str(line).strip()
         if line=="MP":
@@ -829,21 +745,29 @@ def main_script(args=None):
         elif line == "VS":
             graspObj_transform_tree(node,joint_names)
         elif line == "GRASP":           
-            node.publish_gripper_msg("grasp")
+            publish_gripper_msg("grasp",node)
         else:
             print("script command not recognized:",line)
     return
+    while node.arm_plan==None:
+        rclpy.spin_once(node)
+    print("recieved path",node.arm_plan)
+    mess=messageList()
+    mess.loadFromArrOfStrings(joint_names,node.arm_plan.data.splitlines(),.1)
+    node.arm_plan=None
+    node.sendMessageList(mess)
+    return
+    print("send traj")
+    if(str(sys.argv[1])=="-f"):
+        mess=messageList()
+        mess.loadFromFile(joint_names,sys.argv[2],.1)
+        #waitForTrigger()
+        node.sendMessageList(mess)
+    if(str(sys.argv[1])=="-topic"):
+        print("read from topic")
+    else:
+        node.send_traj(joint_names,sys.argv)
 
-
-def main(args=None):
-    args_init=None   
-    rclpy.init(args=args_init)
-    args=sys.argv[1:]
-    print(args)
-    node = Arm_Controller_Node()
-    #node.publish_gripper_msg("connect")
-    node.publish_gripper_msg("release")
-    rclpy.spin(node)
         
 if __name__ == '__main__':
     main()

@@ -10,7 +10,7 @@ import os
 import lh_interfaces
 import tf2_ros
 import geometry_msgs.msg
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TwistStamped
 from tf2_ros import TransformException
 
 from std_srvs.srv import Trigger
@@ -369,7 +369,7 @@ class Arm_Controller_Node(Node):
     #latest_obj_rotation: Rotation = None
     arm_plan_buffer = queue.Queue()
     base_path: Path = None
-    vel_arm_base: Twist = None 
+    vel_arm_base: TwistStamped = None 
     grasping_path_state: PathStatus = None
     grasp_point=[]
     grasp_threshold_distance=.01
@@ -385,7 +385,7 @@ class Arm_Controller_Node(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.arm_motion_plan_subscriber = self.create_subscription(String, '/arm_plan', self.save_arm_plan, 10)
         self.base_path_subscriber = self.create_subscription(Path, '/plan', self.save_base_plan, 10)
-        self.arm_base_vel_subscriber = self.create_subscription(Twist, '/vel_arm_base', self.save_vel_arm_base, 1)
+        self.arm_base_vel_subscriber = self.create_subscription(TwistStamped, '/vel_arm_base', self.save_vel_arm_base, 1)
         self.grasping_path_state_subscriber = self.create_subscription(PathStatus, '/grasping_path_state', self.save_grasping_path_state, 1)
 
         # Publishers
@@ -440,7 +440,7 @@ class Arm_Controller_Node(Node):
         print("got base plan message",message)
         self.base_plan = message
         
-    def save_vel_arm_base(self, message: Twist):
+    def save_vel_arm_base(self, message: TwistStamped):
         print("got vel_arm_base message",message)
         self.vel_arm_base = message
 
@@ -473,7 +473,7 @@ class Arm_Controller_Node(Node):
         #print("object present")
         self.object_presence=message.object_present
         print("object detected, performing vs")
-        if self.object_presence:
+        if self.object_presence and self.grasping_path_state.trigger:
             self.grasp_point=graspObj_transform_tree(self,joint_names,"object","ur5_base_link")
             self.publish_gripper_msg("grasp")
         
@@ -619,13 +619,17 @@ def get_adjusted_target(node,target,t):
         print("velocity not recieved, not offsetting target")
         return target
     
-    dx_base=node.vel_arm_base.linear[0]*t
-    dy_base=node.vel_arm_base.linear[1]*t
+    dx_base=node.vel_arm_base.twist.linear[0]*t
+    dy_base=node.vel_arm_base.twist.linear[1]*t
 
     #adjust for fact that arm is at 45 degree angle
-    dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
-    dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
+    # dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
+    # dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
     
+    # new base vel is the items movement in the ur5_base_link frame 
+    dx_arm = dx_base 
+    dy_arm = dy_base 
+
     target[0]=target[0]+dx_arm
     target[1]=target[1]+dy_arm
     return target

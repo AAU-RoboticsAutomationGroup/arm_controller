@@ -20,7 +20,6 @@ from std_msgs.msg import Header
 from std_msgs.msg import Empty
 from interface_wsg.msg import MoveFingers
 from interface_wsg.msg import GripperState
-from .submodules.wsg50 import wsg50
 
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -406,51 +405,43 @@ class Arm_Controller_Node(Node):
         self.grasping_path_state_subscriber = self.create_subscription(PathStatus, 'grasping_path_status', self.save_grasping_path_state, 1)
         self.grasping_path_state = PathStatus()
         self.grasping_path_state.trigger = False
-
-        # Create instance of wsg50 driver
-        self.wsg_instance = wsg50()
-
         # Publishers
-        #self.gripper_connect_publisher = self.create_publisher(Empty, "/wsg_50/connect", 10)
-        #self.gripper_disconnect_publisher = self.create_publisher(Empty, "/wsg_50/disconnect", 10)
-        #self.gripper_preposition_publisher = self.create_publisher(MoveFingers, "/wsg_50/preposition", 10)
-        #self.gripper_grasp_publisher = self.create_publisher(MoveFingers, "/wsg_50/grasp", 10)
-        #self.gripper_release_publisher = self.create_publisher(MoveFingers, "/wsg_50/release", 10)
+        self.gripper_connect_publisher = self.create_publisher(Empty, "/wsg_50/connect", 10)
+        self.gripper_disconnect_publisher = self.create_publisher(Empty, "/wsg_50/disconnect", 10)
+        self.gripper_preposition_publisher = self.create_publisher(MoveFingers, "/wsg_50/preposition", 10)
+        self.gripper_grasp_publisher = self.create_publisher(MoveFingers, "/wsg_50/grasp", 10)
+        self.gripper_release_publisher = self.create_publisher(MoveFingers, "/wsg_50/release", 10)
 
     def publish_gripper_msg(self, command):
         openwidth = 99.0
         closewidth = 10.0
         speed = 200.0
-        #msg = None
+        msg = None
         if (command == "connect"):
-            #msg = Empty()
-            #self.gripper_connect_publisher.publish(msg)
-            self.wsg_instance.start_connection()
+            msg = Empty()
+            self.gripper_connect_publisher.publish(msg)
         elif (command == "disconnect"):
-            #msg = Empty()
-            #self.gripper_disconnect_publisher.publish(msg)
-            self.wsg_instance.end_connection()
+            msg = Empty()
+            self.gripper_disconnect_publisher.publish(msg)
         elif (command == "preposition"):
-            #msg = MoveFingers()
-            #msg.width = openwidth
-            #msg.speed = speed
-            #self.gripper_preposition_publisher.publish(msg)
-            #self.get_logger().info(f"prepos {msg}")
-            self.wsg_instance.preposition_gripper(openwidth, speed)
+            msg = MoveFingers()
+            msg.width = openwidth
+            msg.speed = speed
+            self.gripper_preposition_publisher.publish(msg)
+            self.get_logger().info("prepos", msg)
         elif (command == "grasp"):
-            #msg = MoveFingers()
-            #msg.width = closewidth
-            #msg.speed = speed
-            #self.gripper_grasp_publisher.publish(msg)
-            self.wsg_instance.grasp_part(closewidth, speed)
+            msg = MoveFingers()
+            msg.width = closewidth
+            msg.speed = speed
+            self.gripper_grasp_publisher.publish(msg)
         elif (command == "release"):
-            #msg = MoveFingers()
-            #msg.width = openwidth
-            #msg.speed = speed
-            #self.gripper_release_publisher.publish(msg)
-            self.wsg_instance.release_part(width, speed) 
+            msg = MoveFingers()
+            msg.width = openwidth
+            msg.speed = speed
+            self.gripper_release_publisher.publish(msg)
 
-        #self.get_logger().info(f"Published: {msg}")
+        print("published" ,msg)           
+        self.get_logger().info(f"Published: {msg}")
 
     def recieve_arm_plan(self, message: String):
         print("got arm plan message",message)
@@ -691,7 +682,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     path_time_over=2
     path_time_goal=.45
 
-    tf_delay= 0.1#(timestamp_transform-node.get_clock().now())/1e9
+    tf_delay= 0#(timestamp_transform-node.get_clock().now())/1e9
     target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)/speed_multiplier+tf_delay)
     target_position[2]=target_position[2]+clearance
     #first go to point above target then go target
@@ -715,12 +706,12 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     eePosGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
     node.get_logger().info(f"computed eePosGoal {eePosGoal}")
     #rotate by 90 so grasping short end
-    #if goal[5]>start[5]:
-    #    goal[5]=goal[5]-3.141596
-    #    goal_over[5]=goal_over[5]-3.141596
-    #else:
-    #    goal[5]=goal[5]+3.141596
-    #    goal_over[5]=goal_over[5]+3.141596
+    if goal[5]>start[5]:
+        goal[5]=goal[5]-3.141596/4
+        goal_over[5]=goal_over[5]-3.141596/4
+    else:
+        goal[5]=goal[5]+3.141596/4
+        goal_over[5]=goal_over[5]+3.141596/4
     
     #get path from start to goal
     n_steps_over=7
@@ -748,7 +739,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     print()
     node.get_logger().info("sending trj message")
     node.sendMessageList(ml,speed_multiplier)
-    time.sleep(1*(path_time_over+path_time_goal)/2)
+    time.sleep(3*(path_time_over+path_time_goal)/4)
 
     
     #get current cfg
@@ -900,11 +891,12 @@ def main(args=None):
     args=sys.argv[1:]
     print(args)
     node = Arm_Controller_Node()
-    node.publish_gripper_msg("preposition")
+    node.publish_gripper_msg("connect")    
+    node.publish_gripper_msg("grasp")
     try:
         rclpy.spin(node)
     finally:
-        node.publish_gripper_msg("disconnect")
+        node.d
         node.destroy_node()
     
 if __name__ == '__main__':

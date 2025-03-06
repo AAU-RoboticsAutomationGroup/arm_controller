@@ -508,10 +508,10 @@ class Arm_Controller_Node(Node):
         #print("object present")
         self.object_presence=message.object_present
         self.get_logger().info("object detected, waiting for grasping path to perform vs")
-        if self.object_presence:# and self.grasping_path_state.trigger:
+        if self.object_presence: #and self.grasping_path_state.trigger:
             print("object and grasping path detected, perfroming vs")
             self.grasp_point=graspObj_transform_tree(self,joint_names,"object","ur5_base_link")
-            self.publish_gripper_msg("grasp")
+            #self.publish_gripper_msg("grasp")
             time.sleep(2)
             self.publish_gripper_msg("disconnect")
         
@@ -681,7 +681,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
 
     print("start =",start)
     
-    clearance=-.01
+    clearance=0.01
     speed_multiplier=1
     
     n_steps_over=7
@@ -691,9 +691,13 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     path_time_over=2
     path_time_goal=.45
 
-    tf_delay= 0.1#(timestamp_transform-node.get_clock().now())/1e9
+    tf_delay= 0.2#(timestamp_transform-node.get_clock().now())/1e9
     target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)/speed_multiplier+tf_delay)
     target_position[2]=target_position[2]+clearance
+
+    target_postposition=target_position
+    #target_postposition[2]=target_postposition[2]+.1
+    
     #first go to point above target then go target
     target_over = target_position
     d_above = .05
@@ -702,7 +706,11 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     checkForReverseAngles(start,goal_over)
     goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,goal_over,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
     checkForReverseAngles(goal_over,goal)
-
+    target_postposition[2]=target_postposition[2]+.1
+    postposition=ur5_transforms.inverse_kinematics(target_postposition,target_rotation,goal,ur5_transforms.dh_params_ur5_w_tool) #added tool to dh
+    checkForReverseAngles(goal,postposition)
+    
+    
 
     
     print("goal",goal)
@@ -731,6 +739,10 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     traj_goal=interpolate(goal_over,goal,n_steps_goal,path_time_goal)
     traj=traj_over+traj_goal
 
+    traj_pp=interpolate(goal,postposition,n_steps_goal,path_time_goal*2)#########
+    print("trap_pp",traj_pp)
+    traj=traj+traj_pp
+    
     print("traj:")
     print(traj)
     print
@@ -748,7 +760,21 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     print()
     node.get_logger().info("sending trj message")
     node.sendMessageList(ml,speed_multiplier)
-    time.sleep(1*(path_time_over+path_time_goal)/2)
+    time.sleep(2*(path_time_over+path_time_goal)/2)
+
+
+    #n_points=len(traj_pp)//(2*len(joint_names)+1)
+    #batch_send=True
+    #messages =  getTrajMessage(joint_names, n_points, traj_pp, batch_send,speed_multiplier)
+    #ml=messageList()
+    #ml.messages=[messages]
+    #print()
+    #print("messages_pp")
+    #print(messages)
+    #print()
+    #print()
+    #node.get_logger().info("sending trj message_pp")
+    #node.sendMessageList(ml,speed_multiplier)
 
     
     #get current cfg
@@ -901,6 +927,7 @@ def main(args=None):
     print(args)
     node = Arm_Controller_Node()
     node.publish_gripper_msg("preposition")
+    node.publish_gripper_msg("grasp")
     try:
         rclpy.spin(node)
     finally:

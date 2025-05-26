@@ -20,7 +20,8 @@ setup(
     #tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'arm_controller = arm_controller.arm_controller:main'
+            'arm_controller = arm_controller.arm_controller:main',
+            'arm_controller_vs = arm_controller.arm_controller_vs:main'	
         ],
     },
 )

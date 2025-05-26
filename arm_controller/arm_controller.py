@@ -394,6 +394,7 @@ class Arm_Controller_Node(Node):
     grasp_compute_interval=.01  #recompute grasp path every .25s
     
     def __init__(self) -> None:
+        print('in init super')
         super().__init__('send_traj')
         self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states', self.save_joint_state, 1)#take out if causes error
         self.statekey_subscriber = self.create_subscription(Statekey, '/statekey', self.get_statekey, 1)#take out if causes error
@@ -410,16 +411,11 @@ class Arm_Controller_Node(Node):
         self.grasping_path_state.trigger = False
 
         # Create instance of wsg50 driver
-        self.wsg_instance = wsg50()
+        #self.wsg_instance = wsg50() #removed
 
-        # Publishers
-        #self.gripper_connect_publisher = self.create_publisher(Empty, "/wsg_50/connect", 10)
-        #self.gripper_disconnect_publisher = self.create_publisher(Empty, "/wsg_50/disconnect", 10)
-        #self.gripper_preposition_publisher = self.create_publisher(MoveFingers, "/wsg_50/preposition", 10)
-        #self.gripper_grasp_publisher = self.create_publisher(MoveFingers, "/wsg_50/grasp", 10)
-        #self.gripper_release_publisher = self.create_publisher(MoveFingers, "/wsg_50/release", 10)
 
     def publish_gripper_msg(self, command):
+        return
         openwidth = 99.0
         closewidth = 10.0
         speed = 200.0
@@ -517,7 +513,9 @@ class Arm_Controller_Node(Node):
         print("times",self.get_clock().now(),self.t_last_grasp_path_compute,b_need_to_compute)    
         if self.object_presence and b_need_to_compute:# and self.grasping_path_state.trigger:
             print("object and grasping path detected, perfroming vs")
-            self.grasp_point=graspObj_transform_tree(self,joint_names,"object","ur5_base_link")
+            [start,target_position,target_rotation,timestamp_transform]=get_obj_pos_transform_tree(self,joint_names,"object","ur5_base_link")
+            self.grasp_point=target_position
+            graspObj(self,joint_names,start,target_position,target_rotation,timestamp_transform)
             self.publish_gripper_msg("grasp")
             self.t_last_grasp_path_compute=self.get_clock().now().nanoseconds/1e9
             time.sleep(2)
@@ -664,20 +662,25 @@ def getCfgFromEEPoint(ee_pos):
 
 def get_adjusted_target(node,target,t):
 
-    if node.vel_arm_base == None:
-        print("velocity not recieved, not offsetting target")
-        return target
+    #if node.vel_arm_base == None:
+    #    print("velocity not recieved, not offsetting target")
+    #    return target
     
-    dx_base=node.vel_arm_base.twist.linear.x*t
-    dy_base=node.vel_arm_base.twist.linear.y*t
+    #dx_base=node.vel_arm_base.twist.linear.x*t
+    #dy_base=node.vel_arm_base.twist.linear.y*t
 
+    #hard code offset
+    v=-.1
+    dx_base=v*t
+    dy_base=0
     #adjust for fact that arm is at 45 degree angle
-    # dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
-    # dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
+    
+    dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
+    dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
     
     # new base vel is the items movement in the ur5_base_link frame 
-    dx_arm = dx_base 
-    dy_arm = dy_base 
+    #dx_arm = dx_base 
+    #dy_arm = dy_base 
     node.get_logger().info(f"initial target {target}")
     target[0]=target[0]-dx_arm
     target[1]=target[1]-dy_arm
@@ -685,11 +688,18 @@ def get_adjusted_target(node,target,t):
     return target
 
 
-def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_transform=""):
+def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_transform="",object_type=0):  #object_type = 0 for phone with foam, 1 for phone without foam, 2 for bin, 3 for bin with phones in it
 
-    print("start =",start)
     
-    clearance=-0.01
+    print("start =",start)
+    if object_type==0:
+          clearance=-.01
+    elif object_type==1:
+          clearance=.01
+    elif object_type==2:
+        clearance=0.04
+    elif object_type==3:
+        clearance=-.035
     speed_multiplier=1
     
     n_steps_over=7
@@ -699,9 +709,15 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     path_time_over=3
     path_time_goal=.7
 
-    tf_delay= 0.2#(timestamp_transform-node.get_clock().now())/1e9
+    tf_delay= 0.3#(timestamp_transform-node.get_clock().now())/1e9
     target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)/speed_multiplier+tf_delay)
     target_position[2]=target_position[2]+clearance
+    if object_type==2 or object_type==3:
+        offset_bin_grasp=np.array([0,-.095,0])
+        offset_bin_grasp=target_rotation@offset_bin_grasp
+        target_position[0]=target_position[0]+offset_bin_grasp[0]
+        target_position[1]=target_position[1]+offset_bin_grasp[1]
+        #should not effect z position
 
     target_postposition=target_position
     #target_postposition[2]=target_postposition[2]+.1
@@ -731,11 +747,16 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
         print("REJECTING PATH BECAUSE MOVEMENT DISTANCE OF FIRST OR SECOND JOINT IS TO LARGE")
         return None
     
-    #target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)*speed_multiplier)
+    ################################target_position=get_adjusted_target(node,target_position,(path_time_over+path_time_goal)*speed_multiplier)
     eePosGoal,eeRotGoal=ur5_transforms.forward_kinematics(goal,ur5_transforms.dh_params_ur5_w_tool)  #added tool to dh  
     node.get_logger().info(f"computed eePosGoal {eePosGoal}")
     print(eeRotGoal)
     psi,theta=ur5_transforms.angle_between_rotation_matrices(eeRotGoal, target_rotation)
+    print("angles",theta,psi)
+    #if theta < 3.141596/4 and theta > -3.141596/4:
+    #    print("angle of inclination of end effector in goal position less than 45 degrees, returning failure")
+    #    return
+    
     while psi>3.141596/2:
         psi=psi-3.141596/2
     while psi<-3.141596/2:
@@ -757,13 +778,14 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     #match rotation of last joint to 90 degrees off of yaw of target rotation so that it aligns with short dim of object
 
     
-    #rotate by 90 so grasping short end
-    #if goal[5]>start[5]:
-    #    goal[5]=goal[5]-3.141596
-    #    goal_over[5]=goal_over[5]-3.141596
-    #else:
-    #    goal[5]=goal[5]+3.141596
-    #    goal_over[5]=goal_over[5]+3.141596
+    #make sure closest 90 degree to start
+    while goal[5]>start[5]+3.141596:
+        goal[5]=goal[5]-3.141596
+        goal_over[5]=goal_over[5]-3.141596
+    while goal[5]<start[5]-3.141596:
+        goal[5]=goal[5]+3.141596
+        goal_over[5]=goal_over[5]+3.141596
+
     
     #get path from start to goal
     n_steps_over=7
@@ -868,17 +890,18 @@ def graspObj_w_computation(node,joint_names):
                     [object_rotation[2][0],object_rotation[2][1],object_rotation[2][2],object_translation.z],
                     [0, 0, 0,1]])
     print("obj_T",obj_T)
-    T=np.dot(T,obj_T)
+    T=np.dot(T,obj_T)#t
     print("t3",T)
     print("diff",T-T_ee)
     target_position = T[:3, 3]
     print("target position************",target_position)
     target_rotation = T[:3, :3]
-    return graspObj(node,joint_names,start,target_position,target_rotation)
+    return [start,target_position,target_rotation,timestamp_transform]
+    #graspObj(node,joint_names,start,target_position,target_rotation)
 
 
     
-def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5_base_link"):
+def get_obj_pos_transform_tree(node,joint_names,object_name="object",base_name="ur5_base_link"):
     #wait for object presence
     #node.wait_for_object_presence()
     #print("detected object")
@@ -901,14 +924,14 @@ def graspObj_transform_tree(node,joint_names,object_name="object",base_name="ur5
     timestamp_transform = transform_obj.header.stamp
     target_position_v=transform_obj.transform.translation
     object_height=.035
-    target_position=[-target_position_v.x,-target_position_v.y,target_position_v.z-object_height]
+    target_position=np.array([-target_position_v.x,-target_position_v.y,target_position_v.z-object_height])
     print("target position",target_position)
     target_rotation_q=transform_obj.transform.rotation
     target_rotation=ur5_transforms.rot_m_from_qu(target_rotation_q)
 
     print("target rotation",target_rotation)    
 
-    return graspObj(node,joint_names,start,target_position,target_rotation,timestamp_transform)
+    return [start,target_position,target_rotation,timestamp_transform]
 
 
 
@@ -971,4 +994,3 @@ def main(args=None):
     
 if __name__ == '__main__':
     main()
-

@@ -8,18 +8,42 @@ from scipy.spatial.transform import Rotation as R
 from arm_controller import arm_controller
 from arm_controller.arm_controller import Arm_Controller_Node
 from trajectory_msgs.msg import JointTrajectoryPoint
+from sensor_msgs.msg import JointState
+from tf2_msgs.msg import TFMessage
+
 #from trajectory_msgs.msg import FollowJointTrajectory
 from lh_interfaces.msg import ObjectPresence
 from arm_planner import ur5_transforms
 import sys
 import time
+import modern_robotics as mr
+from scipy.spatial.transform import Rotation as R
+from scipy.spatial import distance
+
+
+controller_type=3 #1 for PD controller, 2 for straight line controller, 3 for model based.  To do: make this paremeter of executable 
+
+velocity_multiplier=.075#.04
 
 # --- Constants for PD Control ---
-Kp_pos = np.diag([150, 150, 150])   # Proportional gain for position
-Kd_pos = np.diag([20, 20, 20])      # Derivative gain for position
+Kp_pos = np.diag([25, 25, 15])   # Proportional gain for position (changed from 15,15,15
+Kd_pos = np.diag([5, 5, 5])      # Derivative gain for position
 
-Kp_ori = np.diag([50, 50, 50])      # Proportional gain for orientation
-Kd_ori = np.diag([10, 10, 10])      # Derivative gain for orientation
+Kp_ori = np.diag([15, 15, 15])      # Proportional gain for orientation
+Kd_ori = np.diag([12, 12, 15])      # Derivative gain for orientation
+
+#Note I use slightly different values because some methods travel faster and we need to initiale the grasp and the sefty halt sooner
+#table_height_pd=.12
+#grasp_trigger_distance_pd=.085 
+
+#constants for sl controller
+kp_sl=np.diag([80, 80, 20, 25, 25, 15]) 
+
+#table_height_sl=.11     
+#grasp_trigger_distance_sl=.125 
+
+#constants for model based controller
+kp_mb=np.diag([80, 80, 15, 25, 25, 15]) #np.diag([1.0]*3 + [1.0]*3) 
 
 # --- PD Control Function ---
 def pd_control(current_pose, current_velocity, target_pose, target_velocity):
@@ -37,25 +61,182 @@ def pd_control(current_pose, current_velocity, target_pose, target_velocity):
     pos_error = target_pose[0] - current_pose[0]
     vel_error = target_velocity[0] - current_velocity[0]
     force_cmd = Kp_pos @ pos_error + Kd_pos @ vel_error
-
+    #force_cmd= Kp_pos @ pos_error  #debug try just position
     # --- Orientation control ---
     R_err = target_pose[1] @ current_pose[1].T
     angle_axis = R.from_matrix(R_err).as_rotvec()  # Log map SO(3)
     ang_vel_error = target_velocity[1] - current_velocity[1]
     torque_cmd = Kp_ori @ angle_axis + Kd_ori @ ang_vel_error
-
+    #torque_cmd = Kp_ori @ R_err + Kd_ori @ ang_vel_error
+    print('current rot', ur5_transforms.skew_to_vector(current_pose[1]))
+    print('target rot',  ur5_transforms.skew_to_vector(target_pose[1]))
+    print('R_err',  ur5_transforms.skew_to_vector(R_err))
+    print('angle_axis',angle_axis)
     print('force',force_cmd)
     print('torque',torque_cmd)
-    
+    #torque_cmd[0]=0  #debugging code, remove
+    #torque_cmd[1]=0  #debugging code, remove
+
     # Combined 6D wrench
     wrench_cmd = np.hstack((force_cmd, torque_cmd))
     return wrench_cmd
 
+
+def pose_error(current_pos, current_ori, target_pos, target_ori):
+    """
+    Compute the position and orientation error between current and target poses.
+    Orientation error is computed using rotation vector (axis-angle).
+    """
+    # Position error
+    position_error = target_pos - current_pos  # 3D vector
+
+    # Orientation error using rotation vector
+    current_rot = R.from_quat(current_ori)
+    target_rot = R.from_quat(target_ori)
+    
+    rotation_error = target_rot * current_rot.inv()
+    orientation_error = rotation_error.as_rotvec()  # 3D vector (axis * angle)
+
+    return position_error, orientation_error
+
+
+
+def pose_error_sl(current_pos, current_rot, target_pos, target_rot):
+    """
+    Computes 6D pose error between current and target poses.
+    Returns a 6D vector [translation_error; orientation_error].
+    """
+    # Position error
+    pos_error = target_pos - current_pos
+
+    # Rotation error (as rotation vector)
+    R_err = target_rot @ current_rot.T
+    rot_vec_error = R.from_matrix(R_err).as_rotvec()
+
+    return np.hstack((pos_error, rot_vec_error))
+
+def straight_line_vs( current_pos, current_rot, target_pos, target_rot, Kp=np.diag([50, 50, 50, 10, 10, 10])):
+    print('using straight line')
+    """
+    Computes a 6D wrench command to move the end-effector towards the target pose.
+    
+    Parameters:
+        get_ee_pose: function -> (pos, rot_matrix)
+        get_jacobian: function -> 6x6 Jacobian at current_joint_config
+        target_pos: (3,) desired end-effector position in base frame
+        target_rot: (3x3) desired end-effector rotation matrix in base frame
+        Kp: 6x6 proportional gain matrix
+
+    Returns:
+        wrench: (6,) wrench command [Fx, Fy, Fz, Tx, Ty, Tz]
+    """
+    # Get current EE pose
+    #current_pos, current_rot = get_ee_pose(current_joint_config)
+
+    # Compute pose error
+    error = pose_error_sl(current_pos, current_rot, target_pos, target_rot)
+
+    # Compute control wrench using proportional control
+    wrench = Kp @ error
+
+    return wrench
+
+
+
+
+def pose_error_mbvs(current_pos, current_rot, target_pos, target_rot):
+    """
+    Computes 6D pose error between current and target poses.
+    Returns a 6D vector [translation_error; orientation_error].
+    """
+    # Translation error
+    pos_error = target_pos - current_pos
+
+    # Orientation error using rotation matrix
+    R_err = target_rot @ current_rot.T
+    rotvec_error = R.from_matrix(R_err).as_rotvec()
+
+    return np.hstack((pos_error, rotvec_error))
+
+
+def mbvs_control(current_pos, current_rot, target_position, target_rotation, Kp=np.diag([1.0]*3 + [1.0]*3), output='wrench'):
+    """
+    Model-Based Visual Servoing control law.
+
+    Args:
+        target_position: (3,) desired EE position in base frame
+        target_rotation: (3x3) desired EE orientation as rotation matrix
+        Kp: 6x6 gain matrix
+        output: 'twist' (EE velocity) or 'joint_vel' or 'wrench'
+
+    Returns:
+        Control command depending on output:
+            - 6D twist (if output='twist')
+            - 6D wrench (if output='wrench')
+            - 6D joint velocity (if output='joint_vel')
+    """
+    # Current end-effector pose
+    #current_pos, current_rot = get_ee_pose(current_cfg)
+
+    # Pose error
+    error = pose_error_mbvs(current_pos, current_rot, target_position, target_rotation)  # [3 position, 3 orientation]
+
+    # Compute desired EE velocity (twist) in base frame
+    v = Kp @ error  # 6D twist: [vx, vy, vz, wx, wy, wz]
+
+    if output == 'twist':
+        return v
+
+    elif output == 'wrench':
+        return v  # If the low-level controller expects wrench command, treat v as desired wrench
+
+    elif output == 'joint_vel':
+        # Get current Jacobian
+        J = get_jacobian(current_cfg)  # 6x6 for UR5
+
+        # Compute joint velocity via pseudo-inverse
+        dq = np.linalg.pinv(J) @ v
+        return dq
+
+    else:
+        raise ValueError("Unsupported output type. Use 'twist', 'joint_vel', or 'wrench'.")
+
+
+    
+
+#function defunct, fix or remove
 # --- Example usage at time t ---
-def controller_step(t, current_pose, current_velocity, target_pose, target_velocity, J):
+def controller_step(current_pose, current_velocity, target_pose, target_velocity, J):
 
     # Compute 6D wrench from PD control
-    wrench_cmd = pd_control(current_pose, current_velocity, target_pose, target_velocity)
+    wrench_cmd=[0,0,0,0,0,0]
+    if controller_type==1:
+        wrench_cmd = pd_control(current_pose, current_velocity, target_pose, target_velocity)  # for other controller change to spvs_controller
+    if controller_type==2:
+        wrench_cmd = straight_line_vs( current_pose[0], current_pose[1], target_pose[0], target_pose[1],kp_sl)
+    if controller_type==3:
+        wrench_cmd = mbvs_control(current_pos, current_rot, target_position, target_rotation,kp_mb)
+
+    #magnitute=sum(x**2 for x in  wrench_cmd)
+    ## rotate target rot by 180 degrees and generate wrench cmd using rotated matrix
+    ##take wrench cmd that is smaller
+    #Rz_pi = np.array([
+    #    [-1,  0,  0],
+    #    [ 0, -1,  0],
+    #    [ 0,  0,  1]
+    #    ])
+
+    #target_position,target_rotation=target_pose            
+
+    #target_ee_pose_rot=[target_position,  Rz_pi @ target_rotation]
+
+    #wrench_cmd_rotated = pd_control(current_pose, current_velocity, target_pose, target_velocity)
+    #magnitute_rotated=sum(x**2 for x in  wrench_cmd_rotated)
+    #if(magnitute_rotated< magnitute):
+    #    target_rotation= Rz_pi @ target_rotation
+    #    target_ee_pose=target_ee_pose_rot
+    #    wrench_cmd=wrench_cmd_rotated
+    
     print('J')
     print(J)
     J_np = np.array(J).astype(np.float64)
@@ -64,6 +245,8 @@ def controller_step(t, current_pose, current_velocity, target_pose, target_veloc
     print()
     print(wrench_cmd)
     print()
+
+
     
     # Compute joint velocities using pseudo-inverse of Jacobian
     joint_velocities = np.linalg.pinv(J_np) @ wrench_cmd
@@ -72,23 +255,67 @@ def controller_step(t, current_pose, current_velocity, target_pose, target_veloc
     return cleaned_joint_velocities
 
 
+def format_rot_target(rot_matrix,current_rot_matrix):
+    euler_angles = R.from_matrix(rot_matrix).as_euler('xyz', degrees=False)
+    current_euler_angles = R.from_matrix(current_rot_matrix).as_euler('xyz', degrees=False)
 
-class  Arm_Controller_Node_Vs(Arm_Controller_Node):
+    print('real euler angles', euler_angles)
+    euler_angles[0]=-3.141596
+    euler_angles[1]=0#3.141598/16#0
 
-    grasp_path_duration_s=20
+    while euler_angles[0]-current_euler_angles[0]>3.141596:
+         euler_angles[0]= euler_angles[0]-3.141596*2
+    while current_euler_angles[0]-euler_angles[0]>3.141596:
+         euler_angles[0]= euler_angles[0]+3.141596*2
+         
+    while euler_angles[1]-current_euler_angles[1]>3.141596:
+         euler_angles[1]= euler_angles[1]-3.141596*2
+    while current_euler_angles[1]-euler_angles[1]>3.141596:
+         euler_angles[1]= euler_angles[1]+3.141596*2
+    
+    euler_angles[2]=euler_angles[2]#-3.141596/2  #because I want to align with short dimenstion rather than long dimention /removed because aligining wronmg way
+    print('adjusted euler angles', euler_angles)
+
+    psi = euler_angles[2]
+    psi_current = current_euler_angles[2]
+
+    while psi-psi_current>3.141596/2:
+        psi=psi-3.141596
+    while psi_current-psi>3.141596/2:
+        psi=psi+3.141596
+    
+    #while psi-psi_current>3.141596/2:
+    #    psi=psi-3.141596/2
+    #while psi_current-psi>3.141596/2:
+    #    psi=psi+3.141596/2
+
+    print('psi',psi,psi_current)
+    #while psi>3.141596/2:
+    #    psi=psi-3.141596/2
+    #while psi<-3.141596/2:
+    #    psi=psi+3.141596/2
+    euler_angles[2]=psi
+    return R.from_euler('xyz', euler_angles, degrees=False).as_matrix()
+
+
+class Arm_Controller_Node_Vs(Arm_Controller_Node):
+    grasp_path_duration_s=20.0
     time_grasp_s=None
-
     
     def __init__(self) -> None:
         print('before super')
         super().__init__()
 
         self.destroy_subscription(self.object_detection_subscriber)       
-        self.object_detection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence_vs, 1)
+        self.object_detection_subscriber = self.create_subscription(ObjectPresence, '/object_presence', self.get_object_presence_vs, 10)
+        self.destroy_subscription(self.joint_states_subscriber)       
+        self.joint_states_subscriber = self.create_subscription(JointState, '/joint_states_rtde', self.save_joint_state_vs, 1)#take out if causes error
+        self.destroy_subscription(self.tf_subscriber)       
+        self.tf_subscriber = self.create_subscription(TFMessage, '/tf', self.get_tf_vs, 1)#take out if causes error
 
         
         # Create instance of wsg50 driver
-        #self.wsg_instance = wsg50() #removed
+        #self.wsg_instance = wsg50() #removed, done in parent class instead
         
         print('after super')
         self.rtde_control_publisher = self.create_publisher(
@@ -96,68 +323,229 @@ class  Arm_Controller_Node_Vs(Arm_Controller_Node):
             '/rtde_control',
             10  # QoS history depth
         )
+
+        self.timer = self.create_timer(.1, self.grasping_step) #every .1 seconds do itteration of vs
         print('done init')
 
+    def save_joint_state_vs(self, message: JointState):
+        self.save_joint_state(message)
+        self.grasping_step()
+        
+    def get_tf_vs(self, message: TFMessage):
+        self.get_tf(message)
+        self.grasping_step()
+        
+    def get_object_presence_vs(self, message: ObjectPresence):
+        print("in object presence vs")        
+        self.object_presence=message.object_present
+        self.get_logger().info("object detected, waiting for grasping path to perform vs")
+        if self.object_presence: #and self.grasping_path_state.trigger:
+            self.object_presence=True
+        self.grasping_step()
+
+        
     def publishJointVel(self,velocities):
         jtp=JointTrajectoryPoint()
-        cleaned_velocities = [-float(v) for v in velocities if isinstance(v, (int, float, str))]
+        cleaned_velocities = [float(v) for v in velocities if isinstance(v, (int, float, str))]
         print(cleaned_velocities)
         jtp.velocities=cleaned_velocities
 
         self.rtde_control_publisher.publish(jtp)            
         print("sent")
         self.get_logger().info('Sending velocity: {}'.format(jtp))
-      
 
-    def get_object_presence_vs(self, message: ObjectPresence):
-        print("in object presence vs")        
-        self.object_presence=message.object_present
-        self.get_logger().info("object detected, waiting for grasping path to perform vs")
-        if self.object_presence: #and self.grasping_path_state.trigger:
+
+    table_height=.11 #was .12 for pd experiments    
+    grasp_trigger_distance=.125 #was .085 for pd experiments
+    d_to_close_to_trust=.25  
+    last_taget_rot=None
+    last_taget_position=None
+    recieved_target=False
+    grasp_start_time=-1
+    halt=False
+    distance_z=[]
+    
+    def get_velocities_pd_controller(self):
+        current_cfg,current_joint_v,target_position,target_rotation,timestamp_transform=arm_controller.get_obj_pos_transform_tree(self,arm_controller.joint_names,"object","ur5_base_link")
+        if(self.grasp_start_time==-1):
+            self.grasp_start_time=self.get_clock().now().nanoseconds/1e9
+        grasp_duration=self.get_clock().now().nanoseconds/1e9-self.grasp_start_time  #.32m / m/s  #Right now using an estimate, will compute properly
+        #target_position=arm_controller.get_adjusted_target(self,target_position,grasp_duration)
+
+        dx_base=-.32*(5.38-grasp_duration)
+        dy_base=0
+        #adjust for fact that arm is at 45 degree angle
+    
+        dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
+        dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
+        #target_position[0]=target_position[0]+ dx_arm
+        #target_position[1]=target_position[1]+ dy_arm
+
+        
+        target_position[2]=target_position[2]-.03
+        
+        J=ur5_transforms.compute_jacobian(ur5_transforms.dh_params_ur5_w_tool,current_cfg)
+        J= np.array(J).astype(np.float64)
+        print('here',current_joint_v)
+        print()
+        print(J)
+        print()
+        print(current_cfg)
+        print()
+        twist = J @ current_joint_v[:6] 
+        current_ee_pos_v = twist[0:3] # Linear velocity
+        current_ee_rot_v = twist[3:6] # Angular velocity
+        self.grasp_point=target_position
+        
+        current_ee_pos,current_ee_rot=ur5_transforms.forward_kinematics(current_cfg,ur5_transforms.dh_params_ur5_w_tool)
+        print('testing ee pos ',current_ee_pos[2], target_position[2])
+        if(current_ee_pos[2]<self.table_height):
+            self.halt=True
+
+
+        print('target rot before',target_rotation)
+        target_rotation= format_rot_target(target_rotation,current_ee_rot)
+        print('target rot after',target_rotation)
+        t = self.time_grasp_s-self.get_clock().now().nanoseconds/1e9
+        #tool_height=.175
+        #target_position[2]=target_position[2]+tool_height
+
+        
+
+        
+        print('d=', distance.euclidean(current_ee_pos,target_position))
+        if distance.euclidean(current_ee_pos,target_position)<self.d_to_close_to_trust and self.recieved_target:
+            print('using last pos\rot')
+            target_rotation=self.last_target_rot
+            target_position=self.last_target_position
+        else:
+            self.last_target_rot=target_rotation
+            self.last_target_position=target_position
+            self.recieved_target=True
+
+
+
+        self.grasp_point=target_position            
+
+            
+        #if(distance.euclidean(current_ee_pos,target_position)<self.grasp_trigger_distance):
+        if(current_ee_pos[2]-target_position[2]<self.grasp_trigger_distance and target_position[2]-current_ee_pos[2]<self.grasp_trigger_distance or self.halt):
+            self.publish_gripper_msg("grasp")
+            self.halt=True
+            print('prnting z values')
+            for element in self.distance_z:
+                print(element)
+            print('grasp time= ',grasp_duration)
+            distance_z=[]
+        #if(current_ee_pos[2]-target_position[2]<self.grasp_trigger_distance+.02 and target_position[2]-current_ee_pos[2]<self.grasp_trigger_distance+.02):
+        #    self.halt=True
+
+        current_ee_pose=[current_ee_pos,current_ee_rot]
+        print('current ee pose',current_ee_pose)
+        print()
+        target_ee_pose=[target_position,target_rotation]            
+        current_ee_velocity=[current_ee_pos_v,current_ee_rot_v]#set to correct value from msg
+        target_ee_velocity=[np.array([0.0,0.0,0.0]),np.array([0.0,0.0,0.0])]#set to correct value from msg
+
+        #velocities=controller_step(current_ee_pose, current_ee_velocity, target_ee_pose, target_ee_velocity, J)
+        #return velocities
+        wrench_cmd=[0,0,0,0,0,0]
+        if controller_type==1:
+           wrench_cmd=pd_control(current_ee_pose, current_ee_velocity, target_ee_pose, target_ee_velocity)
+        if controller_type==2:
+            wrench_cmd = straight_line_vs(current_ee_pose[0], current_ee_pose[1], target_ee_pose[0], target_ee_pose[1],kp_sl)
+        if controller_type==3:
+            wrench_cmd = mbvs_control(current_ee_pose[0], current_ee_pose[1], target_ee_pose[0], target_ee_pose[1],kp_mb)
+        #wrench_cmd=pd_control(current_ee_pose, current_ee_velocity, target_ee_pose, target_ee_velocity)
+        try_other_dir=True
+        if try_other_dir:
+            magnitute=sum(x**2 for x in  wrench_cmd)
+            # rotate target rot by 180 degrees and generate wrench cmd using rotated matrix
+            #take wrench cmd that is smaller
+            Rz_pi = np.array([
+                [1,  0,  0],
+                [ 0, -1,  0],
+                [ 0,  0,  -1]
+            ])
+            target_ee_pose_rot=[target_position,  Rz_pi @ target_rotation]
+            wrench_cmd_rotated=pd_control(current_ee_pose, current_ee_velocity, target_ee_pose_rot, target_ee_velocity)
+            magnitute_rotated=sum(x**2 for x in  wrench_cmd_rotated)
+            if(magnitute_rotated< magnitute):
+                target_rotation= Rz_pi @ target_rotation
+                target_ee_pose=target_ee_pose_rot
+                wrench_cmd=wrench_cmd_rotated
+        velocities=ur5_transforms.velocity_in_dir_of_vector(current_cfg,wrench_cmd,ur5_transforms.dh_params_ur5_w_tool,1)
+        print('target_rotation here',target_rotation)
+        target_euler_angles = R.from_matrix(target_rotation).as_euler('xyz', degrees=False)
+        current_euler_angles = R.from_matrix(current_ee_rot).as_euler('xyz', degrees=False)
+        print("angles",target_euler_angles,current_euler_angles)
+        #while current_euler_angles[0]-target_euler_angles[2];
+        threshold=3.141596/32
+
+
+        self.distance_z.append(current_ee_pos[2]-target_position[2])
+        self.distance_z.append(target_position[0])
+        self.distance_z.append(target_position[1])
+        self.distance_z.append(target_euler_angles[0])
+        self.distance_z.append(target_euler_angles[1])        
+        self.distance_z.append(target_euler_angles[2])
+        self.distance_z.append(';')
+
+        #if target_euler_angles[0]-current_euler_angles[0]<threshold and current_euler_angles[0]-target_euler_angles[0]<threshold:
+        #    if target_euler_angles[1]-current_euler_angles[1]<threshold and current_euler_angles[1]-target_euler_angles[1]<threshold:
+        #        print("locking joints 3 adn 4")
+        #        velocities[4]=0
+        #        velocities[3]=0
+
+        threshold=3.141596/16
+        print('lock',target_euler_angles[2],current_euler_angles[2])
+        if target_euler_angles[2]-current_euler_angles[2]<threshold and current_euler_angles[2]-target_euler_angles[2]<threshold:
+            velocities[5]=0
+            print('se4tting to 0')
+        if distance.euclidean(current_ee_pos,target_position)<self.d_to_close_to_trust: #<.3
+            #velocities[3]=0
+            #velocities[4]=0
+
+            velocities[5]=velocities[5]/2.5
+
+        if distance.euclidean(current_ee_pos,target_position)<.1:
+            velocities[3]=0
+            velocities[4]=0
+            velocities[5]=0
+
+        velocities[3]=-velocities[3]
+        velocities[4]=velocities[4]/5
+        
+        if(self.halt):
+            print('end effector below target, halting arm')
+            #self.publish_gripper_msg("grasp")
+            return [0,0,0,0,0,0]
+        
+        return velocities
+                    
+
+    def grasping_step(self):
+        object_name="object"
+        base_name="ur5_base_link"
+        transform_obj=self.get_transform(base_name,object_name)
+        if (self.object_presence or self.recieved_target) and self.latest_joint_states_message!=None and transform_obj != None:
             if self.time_grasp_s==None:
                 self.time_grasp_s = self.get_clock().now().nanoseconds/1e9+self.grasp_path_duration_s
             b_need_to_compute=False
             print("object and grasping path detected, perfroming vs")
-            current_cfg,target_position,target_rotation,timestamp_transform=arm_controller.get_obj_pos_transform_tree(self,arm_controller.joint_names,"object","ur5_base_link")
-
-            target_rotation=target_rotation.T
-            print("target rot", target_rotation)
-            rot = R.from_matrix(target_rotation)
-            yaw_pitch_roll_rad = rot.as_euler('ZYX', degrees=False)
-            yaw_pitch_roll_deg = rot.as_euler('ZYX', degrees=True)
-
-            print("Yaw, Pitch, Roll (radians):", yaw_pitch_roll_rad)
-            print("Yaw, Pitch, Roll (degrees):", yaw_pitch_roll_deg)
-            yaw_pitch_roll_rad[1]=yaw_pitch_roll_rad[1]+3.141596/2
-
-            # Step 2: Convert back from Euler angles to rotation matrix
-            target_rotation = R.from_euler('ZYX', yaw_pitch_roll_rad).as_matrix()
-            print("\nReconstructed Rotation Matrix:")
-            print(target_rotation)
-
-
-            #target_rotation=ur5_transforms.straighten_up_rotation(target_rotation)
-
-            self.grasp_point=target_position            
-            #goal=ur5_transforms.inverse_kinematics(target_position,target_rotation,current_pose,ur5_transforms.dh_params_ur5_w_tool)
-            t = self.time_grasp_s-self.get_clock().now().nanoseconds/1e9
-
-            current_ee_pos,current_ee_rot=ur5_transforms.forward_kinematics(current_cfg,ur5_transforms.dh_params_ur5)
-            current_ee_pose=[current_ee_pos,current_ee_rot]
-            print('current ee pose',current_ee_pose)
-            print()
-            target_ee_pose=[target_position,target_rotation]
-            
-            current_ee_velocity=[np.array([0.0,0.0,0.0]),np.array([0.0,0.0,0.0])]#set to correct value from msg
-            target_velocity=[np.array([0.0,0.0,0.0]),np.array([0.0,0.0,0.0])]#set to correct value from msg
-            J=ur5_transforms.compute_jacobian(ur5_transforms.dh_params_ur5)
-            
-            velocities = controller_step(t, current_ee_pose, current_ee_velocity, target_ee_pose, target_velocity, J)
+            velocities = self.get_velocities_pd_controller()                     
             print('publishing vs joint vel',velocities)
+            velocities = [x * velocity_multiplier for x in velocities]
             for v in velocities:
                 print(v)            
-            self.publishJointVel(velocities)
- 
+            self.publishJointVel(velocities)  #removed for debugging
+            print('done publish')
+          
+            #self.updated_tf=False
+            #self.updated_cfg=False
+            #while not self.updated_tf and not self.updated_cfg: 
+            #    rclpy.spin_once(self)
+
             #self.publish_gripper_msg("grasp")
             #time.sleep(t)
             #self.publish_gripper_msg("disconnect")
@@ -172,14 +560,15 @@ def main(args=None):
     print('args',args)
     node = Arm_Controller_Node_Vs()
     print("node done")
-    #node.publish_gripper_msg("preposition")
+    node.publish_gripper_msg("preposition")
     #node.publish_gripper_msg("grasp")
     print("before try")
     try:
         rclpy.spin(node)
     finally:
-        #node.publish_gripper_msg("disconnect")
+        node.publish_gripper_msg("disconnect")
         node.destroy_node()
         
 if __name__ == '__main__':
     main()
+

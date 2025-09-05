@@ -190,7 +190,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
                 to_point.positions=cfg_step
                 #print("position in stepping")
                 #print(to_point.positions)
-                to_point.velocities = vel_step                   ######removed vels 
+                to_point.velocities = vel_step                    
                 to_point.time_from_start = Duration(seconds=duration_step).to_msg()                
                 to_point.time_from_start = Duration(seconds=0,nanoseconds=time_from_start).to_msg() 
                 #time_from_start=time_from_start+duration_step-delay_between_msg
@@ -222,7 +222,7 @@ def getTrajMessage(joint_names, n_points, cfg_list,batch_send,speed_multiplier):
             to_point.positions=cfg
             #print("pos")
             #print(to_point.positions)
-            to_point.velocities = vel ###########removed velocities
+            to_point.velocities = vel 
             d_s=time_from_start//1
             print("time from start",time_from_start)
             d_ns=(time_from_start-d_s)*1000000000
@@ -392,6 +392,8 @@ class Arm_Controller_Node(Node):
     grasp_threshold_distance=.005
     t_last_grasp_path_compute= None
     grasp_compute_interval=.01  #recompute grasp path every .25s
+    updated_tf=False
+    updated_cfg=False
     
     def __init__(self) -> None:
         print('in init super')
@@ -411,11 +413,10 @@ class Arm_Controller_Node(Node):
         self.grasping_path_state.trigger = False
 
         # Create instance of wsg50 driver
-        #self.wsg_instance = wsg50() #removed
+        self.wsg_instance = wsg50() #removed
 
 
     def publish_gripper_msg(self, command):
-        return
         openwidth = 99.0
         closewidth = 10.0
         speed = 200.0
@@ -485,6 +486,11 @@ class Arm_Controller_Node(Node):
         return self.arm_plan_buffer.get()
         
     def save_joint_state(self, message: JointState):
+        print('recieved joint state')
+        self.updated_cfg=True
+        if message.position[0]==0 and message.position[1]==0 and message.position[2]==0 and message.position[3]==0 and message.position[4]==0 and message.position[5]==0:
+            print('empty joint state, not updating')
+            return
         self.latest_joint_states_message = message
         #print()
         #print("comparing to grasp point",self.grasp_point)
@@ -513,7 +519,7 @@ class Arm_Controller_Node(Node):
         print("times",self.get_clock().now(),self.t_last_grasp_path_compute,b_need_to_compute)    
         if self.object_presence and b_need_to_compute:# and self.grasping_path_state.trigger:
             print("object and grasping path detected, perfroming vs")
-            [start,target_position,target_rotation,timestamp_transform]=get_obj_pos_transform_tree(self,joint_names,"object","ur5_base_link")
+            [start,start_v,target_position,target_rotation,timestamp_transform]=get_obj_pos_transform_tree(self,joint_names,"object","ur5_base_link")
             self.grasp_point=target_position
             graspObj(self,joint_names,start,target_position,target_rotation,timestamp_transform)
             self.publish_gripper_msg("grasp")
@@ -522,7 +528,8 @@ class Arm_Controller_Node(Node):
             #self.publish_gripper_msg("disconnect")
         
     def get_tf(self, message: TFMessage):
-        #print("got tf")
+        print("got tf")
+        self.updated_tf=True
         if len(message.transforms)==0:
            return
         #print(message.transforms[0].child_frame_id)
@@ -544,6 +551,12 @@ class Arm_Controller_Node(Node):
             print("warning:  arm controller expects joint states to be sent prior to object detection trigger")
             rclpy.spin_once(self)
         return self.latest_joint_states_message.position
+
+    def get_joint_velocity(self):
+        while self.latest_joint_states_message==None:
+            print("warning:  arm controller expects joint states to be sent prior to object detection trigger")
+            rclpy.spin_once(self)
+        return self.latest_joint_states_message.velocity
         
     def withinTimeOfKeypoint(self, threshold):
         if len(self.time_to_keypoints) == 0:
@@ -688,9 +701,7 @@ def get_adjusted_target(node,target,t):
     return target
 
 
-def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_transform="",object_type=0):  #object_type = 0 for phone with foam, 1 for phone without foam, 2 for bin, 3 for bin with phones in it
-
-    
+def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_transform="",object_type=0):  #object_type = 0 for phone with foam, 1 for phone without foam, 2 for bin, 3 for bin with phones in it    
     print("start =",start)
     if object_type==0:
           clearance=-.01
@@ -852,7 +863,7 @@ def graspObj(node,joint_names,start,target_position,target_rotation, timestamp_t
     return goal
 
 
-
+#defunct because now using transform tree
 def graspObj_w_computation(node,joint_names):
     #wait for object presence
     node.wait_for_object_presence()
@@ -909,7 +920,7 @@ def get_obj_pos_transform_tree(node,joint_names,object_name="object",base_name="
     #get current cfg
     start_borked=node.get_joint_state()
     start=[start_borked[5],start_borked[0],start_borked[1],start_borked[2],start_borked[3],start_borked[4]]
-
+    start_v=node.get_joint_velocity()
     #get transform of object
     transform_obj=node.get_transform(base_name,object_name)
     while transform_obj == None:
@@ -931,7 +942,7 @@ def get_obj_pos_transform_tree(node,joint_names,object_name="object",base_name="
 
     print("target rotation",target_rotation)    
 
-    return [start,target_position,target_rotation,timestamp_transform]
+    return [start,start_v,target_position,target_rotation,timestamp_transform]
 
 
 
@@ -994,3 +1005,4 @@ def main(args=None):
     
 if __name__ == '__main__':
     main()
+

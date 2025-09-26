@@ -26,24 +26,30 @@ controller_type=3 #1 for PD controller, 2 for straight line controller, 3 for mo
 velocity_multiplier=.075#.04
 
 # --- Constants for PD Control ---
-Kp_pos = np.diag([25, 25, 15])   # Proportional gain for position (changed from 15,15,15
-Kd_pos = np.diag([5, 5, 5])      # Derivative gain for position
+Kp_pos = np.diag([20, 20, 15])   # Proportional gain for position (changed from 15,15,15
+Kd_pos = np.diag([10, 10, 5])      # Derivative gain for position
 
-Kp_ori = np.diag([15, 15, 15])      # Proportional gain for orientation
-Kd_ori = np.diag([12, 12, 15])      # Derivative gain for orientation
+Kp_ori = np.diag([10, 10, 10])      # Proportional gain for orientation
+Kd_ori = np.diag([9, 9, 5])      # Derivative gain for orientation
+
+avg_grasp_time=4.2
 
 #Note I use slightly different values because some methods travel faster and we need to initiale the grasp and the sefty halt sooner
-#table_height_pd=.12
-#grasp_trigger_distance_pd=.085 
+table_height_pd=.11
+grasp_trigger_distance_pd=.08 
 
 #constants for sl controller
 kp_sl=np.diag([80, 80, 20, 25, 25, 15]) 
 
 #table_height_sl=.11     
-#grasp_trigger_distance_sl=.125 
+#grasp_trigger_distance_sl=.085 
+#object_height_sl=.03
 
 #constants for model based controller
 kp_mb=np.diag([80, 80, 15, 25, 25, 15]) #np.diag([1.0]*3 + [1.0]*3) 
+
+#table_height_mb=.11     
+#grasp_trigger_distance_mb=.125 
 
 # --- PD Control Function ---
 def pd_control(current_pose, current_velocity, target_pose, target_velocity):
@@ -76,6 +82,8 @@ def pd_control(current_pose, current_velocity, target_pose, target_velocity):
     print('torque',torque_cmd)
     #torque_cmd[0]=0  #debugging code, remove
     #torque_cmd[1]=0  #debugging code, remove
+    #torque_cmd[1]=-torque_cmd[1]
+    #torque_cmd[2]=-torque_cmd[2] 
 
     # Combined 6D wrench
     wrench_cmd = np.hstack((force_cmd, torque_cmd))
@@ -356,8 +364,9 @@ class Arm_Controller_Node_Vs(Arm_Controller_Node):
 
 
     table_height=.11 #was .12 for pd experiments    
-    grasp_trigger_distance=.125 #was .085 for pd experiments
-    d_to_close_to_trust=.25  
+    grasp_trigger_distance=.085#.110 #was .085 for pd experiments
+    d_to_close_to_trust=.25
+    object_height=.03
     last_taget_rot=None
     last_taget_position=None
     recieved_target=False
@@ -372,14 +381,17 @@ class Arm_Controller_Node_Vs(Arm_Controller_Node):
         grasp_duration=self.get_clock().now().nanoseconds/1e9-self.grasp_start_time  #.32m / m/s  #Right now using an estimate, will compute properly
         #target_position=arm_controller.get_adjusted_target(self,target_position,grasp_duration)
 
-        dx_base=-.32*(5.38-grasp_duration)
+        #dx_base=.45#.42#.1*self.avg_grasp_time#*(avg_grasp_time-grasp_duration)
+        #dx_base=.45 # pd
+        #dx_base=.3# for sl, sometimes worked with mb
+        dx_base=.315
         dy_base=0
         #adjust for fact that arm is at 45 degree angle
     
         dx_arm=np.sin(3.141596/4)*dx_base+np.cos(3.141596/4)*dy_base
         dy_arm=np.cos(3.141596/4)*dx_base+np.sin(3.141596/4)*dy_base
-        #target_position[0]=target_position[0]+ dx_arm
-        #target_position[1]=target_position[1]+ dy_arm
+        target_position[0]=target_position[0]+ dx_arm
+        target_position[1]=target_position[1]+ dy_arm
 
         
         target_position[2]=target_position[2]-.03
@@ -431,12 +443,15 @@ class Arm_Controller_Node_Vs(Arm_Controller_Node):
         #if(distance.euclidean(current_ee_pos,target_position)<self.grasp_trigger_distance):
         if(current_ee_pos[2]-target_position[2]<self.grasp_trigger_distance and target_position[2]-current_ee_pos[2]<self.grasp_trigger_distance or self.halt):
             self.publish_gripper_msg("grasp")
-            self.halt=True
+            #self.halt=True  #don't use for pd
             print('prnting z values')
             for element in self.distance_z:
                 print(element)
             print('grasp time= ',grasp_duration)
             distance_z=[]
+
+        if(current_ee_pos[2]-target_position[2]<self.grasp_trigger_distance - self.object_height and target_position[2]-current_ee_pos[2]<self.grasp_trigger_distance - self.object_height):
+            self.halt=True 
         #if(current_ee_pos[2]-target_position[2]<self.grasp_trigger_distance+.02 and target_position[2]-current_ee_pos[2]<self.grasp_trigger_distance+.02):
         #    self.halt=True
 
@@ -480,7 +495,7 @@ class Arm_Controller_Node_Vs(Arm_Controller_Node):
         current_euler_angles = R.from_matrix(current_ee_rot).as_euler('xyz', degrees=False)
         print("angles",target_euler_angles,current_euler_angles)
         #while current_euler_angles[0]-target_euler_angles[2];
-        threshold=3.141596/32
+        threshold=3.141596/16
 
 
         self.distance_z.append(current_ee_pos[2]-target_position[2])
@@ -491,11 +506,11 @@ class Arm_Controller_Node_Vs(Arm_Controller_Node):
         self.distance_z.append(target_euler_angles[2])
         self.distance_z.append(';')
 
-        #if target_euler_angles[0]-current_euler_angles[0]<threshold and current_euler_angles[0]-target_euler_angles[0]<threshold:
-        #    if target_euler_angles[1]-current_euler_angles[1]<threshold and current_euler_angles[1]-target_euler_angles[1]<threshold:
-        #        print("locking joints 3 adn 4")
-        #        velocities[4]=0
-        #        velocities[3]=0
+        if target_euler_angles[0]-current_euler_angles[0]<threshold and current_euler_angles[0]-target_euler_angles[0]<threshold:
+           if target_euler_angles[1]-current_euler_angles[1]<threshold and current_euler_angles[1]-target_euler_angles[1]<threshold:
+                print("locking joints 3 adn 4")
+                velocities[4]=0
+                velocities[3]=0
 
         threshold=3.141596/16
         print('lock',target_euler_angles[2],current_euler_angles[2])
@@ -571,4 +586,3 @@ def main(args=None):
         
 if __name__ == '__main__':
     main()
-
